@@ -5,7 +5,7 @@ type Row=Record<string,any>;
 type Props={token:string|null;role:string};
 export default function Procurement({token,role}:Props){
  const manager=role==="admin"||role==="manager";
- const [requests,setRequests]=useState<Row[]>([]),[orders,setOrders]=useState<Row[]>([]),[receipts,setReceipts]=useState<Row[]>([]),[invoices,setInvoices]=useState<Row[]>([]);
+ const [requests,setRequests]=useState<Row[]>([]),[orders,setOrders]=useState<Row[]>([]),[receipts,setReceipts]=useState<Row[]>([]),[invoices,setInvoices]=useState<Row[]>([]),[payments,setPayments]=useState<Row[]>([]);
  const [suppliers,setSuppliers]=useState<Row[]>([]),[items,setItems]=useState<Row[]>([]),[warehouses,setWarehouses]=useState<Row[]>([]),[accounts,setAccounts]=useState<Row[]>([]);
  const [error,setError]=useState(""),[busy,setBusy]=useState(false);
  const [request,setRequest]=useState({purpose:"",description:"",quantity:"1",price:"0"});
@@ -13,6 +13,7 @@ export default function Procurement({token,role}:Props){
  const [receipt,setReceipt]=useState({order_id:"",warehouse_id:"",line_id:"",quantity:"1",unit_cost:""});
  const [invoice,setInvoice]=useState({order_id:"",invoice_number:"",invoice_date:new Date().toISOString().slice(0,10),line_id:"",quantity:"1",unit_price:"0",tax_rate:"15"});
  const [posting,setPosting]=useState({invoice_id:"",payable_account_id:"",inventory_account_id:"",input_tax_account_id:""});
+ const [supplierPayment,setSupplierPayment]=useState({invoice_id:"",amount:"",payment_method:"bank_transfer",payment_account_id:"",reference_number:""});
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
  const selectedOrder=useMemo(()=>orders.find(x=>x.id===receipt.order_id),[orders,receipt.order_id]);
  const invoiceOrder=useMemo(()=>orders.find(x=>x.id===invoice.order_id),[orders,invoice.order_id]);
@@ -22,10 +23,10 @@ export default function Procurement({token,role}:Props){
   try{
    const req=await fetch("/api/procurement/requests",{headers});const rd=await req.json();if(!req.ok)throw new Error(rd.error||"تعذر تحميل طلبات الشراء");setRequests(rd.requests||[]);
    if(manager){
-    const urls=["/api/procurement/orders","/api/procurement/goods-receipts","/api/procurement/supplier-invoices","/api/finance/parties","/api/inventory/items","/api/inventory/warehouses","/api/finance/accounts"];
+    const urls=["/api/procurement/orders","/api/procurement/goods-receipts","/api/procurement/supplier-invoices","/api/finance/parties","/api/inventory/items","/api/inventory/warehouses","/api/finance/accounts","/api/procurement/supplier-payments"];
     const rs=await Promise.all(urls.map(u=>fetch(u,{headers})));const ds=await Promise.all(rs.map(r=>r.json()));
     const bad=rs.findIndex(r=>!r.ok);if(bad>=0)throw new Error(ds[bad].error||"تعذر تحميل بيانات دورة المشتريات");
-    setOrders(ds[0].orders||[]);setReceipts(ds[1].receipts||[]);setInvoices(ds[2].invoices||[]);setSuppliers((ds[3].parties||[]).filter((x:Row)=>["supplier","both"].includes(x.party_type)));setItems(ds[4].items||[]);setWarehouses(ds[5].warehouses||[]);setAccounts(ds[6].accounts||[]);
+    setOrders(ds[0].orders||[]);setReceipts(ds[1].receipts||[]);setInvoices(ds[2].invoices||[]);setSuppliers((ds[3].parties||[]).filter((x:Row)=>["supplier","both"].includes(x.party_type)));setItems(ds[4].items||[]);setWarehouses(ds[5].warehouses||[]);setAccounts(ds[6].accounts||[]);setPayments(ds[7].payments||[]);
    }
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل المشتريات");}
  },[token,role]);
@@ -87,7 +88,7 @@ export default function Procurement({token,role}:Props){
     {field(invoice.tax_rate,v=>setInvoice(x=>({...x,tax_rate:v})),"الضريبة %","number")}
     <button disabled={busy}>حفظ فاتورة المورد كمسودة</button>
    </form>
-   <h3>فواتير الموردين</h3><div className="task-list">{invoices.map(x=><article className="task-row" key={x.id}><div><strong>{x.internal_number} · {x.supplier_invoice_number}</strong><small>{x.supplier_name} · {Number(x.total).toLocaleString("ar-SA")} ر.س · {x.status}{x.entry_number?" · قيد "+x.entry_number:""}</small></div></article>)}{!invoices.length&&<div className="empty-state">لا توجد فواتير موردين.</div>}</div>
+   <h3>فواتير الموردين</h3><div className="task-list">{invoices.map(x=><article className="task-row" key={x.id}><div><strong>{x.internal_number} · {x.supplier_invoice_number}</strong><small>{x.supplier_name} · {Number(x.total).toLocaleString("ar-SA")} ر.س · {x.status}{x.entry_number?" · قيد "+x.entry_number:""}</small>{x.status==="posted"&&<small>المدفوع {Number(x.paid_amount||0).toLocaleString("ar-SA")} · المتبقي {Number(x.outstanding_amount||0).toLocaleString("ar-SA")} ر.س</small>}</div></article>)}{!invoices.length&&<div className="empty-state">لا توجد فواتير موردين.</div>}</div>
    <h3>ترحيل فاتورة المورد إلى دفتر الأستاذ</h3>
    <form className="task-create" style={inputStyle} onSubmit={e=>{e.preventDefault();void post("/api/procurement/supplier-invoices/"+posting.invoice_id+"/post",{payable_account_id:posting.payable_account_id,inventory_account_id:posting.inventory_account_id,input_tax_account_id:posting.input_tax_account_id});}}>
     <select required value={posting.invoice_id} onChange={e=>setPosting(x=>({...x,invoice_id:e.target.value}))}><option value="">اختر فاتورة مسودة</option>{invoices.filter(x=>x.status==="draft").map(x=><option key={x.id} value={x.id}>{x.internal_number} · {x.supplier_invoice_number} · {x.total} ر.س</option>)}</select>
@@ -96,6 +97,16 @@ export default function Procurement({token,role}:Props){
     <select required value={posting.input_tax_account_id} onChange={e=>setPosting(x=>({...x,input_tax_account_id:e.target.value}))}><option value="">حساب ضريبة المدخلات (أصول)</option>{accounts.filter(x=>x.account_type==="asset").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
     <button disabled={busy||!selectedInvoice}>ترحيل الفاتورة وإنشاء القيد</button>
    </form>
+   <h3>سداد فواتير الموردين</h3>
+   <form className="task-create" style={inputStyle} onSubmit={e=>{e.preventDefault();void post("/api/procurement/supplier-payments",{supplier_invoice_id:supplierPayment.invoice_id,amount:Number(supplierPayment.amount),payment_method:supplierPayment.payment_method,payment_account_id:supplierPayment.payment_account_id,reference_number:supplierPayment.reference_number||undefined}).then(ok=>{if(ok)setSupplierPayment(v=>({...v,amount:"",reference_number:""}));});}}>
+    <select required value={supplierPayment.invoice_id} onChange={e=>setSupplierPayment(v=>({...v,invoice_id:e.target.value}))}><option value="">اختر فاتورة مورد مستحقة</option>{invoices.filter(x=>x.status==="posted"&&Number(x.outstanding_amount)>0).map(x=><option key={x.id} value={x.id}>{x.internal_number} · {x.supplier_name} · متبقي {Number(x.outstanding_amount).toFixed(2)} ر.س</option>)}</select>
+    {field(supplierPayment.amount,v=>setSupplierPayment(x=>({...x,amount:v})),"مبلغ السداد","number")}
+    <select required value={supplierPayment.payment_method} onChange={e=>setSupplierPayment(v=>({...v,payment_method:e.target.value}))}><option value="bank_transfer">تحويل بنكي</option><option value="cash">نقدي</option><option value="card">بطاقة</option><option value="other">أخرى</option></select>
+    <select required value={supplierPayment.payment_account_id} onChange={e=>setSupplierPayment(v=>({...v,payment_account_id:e.target.value}))}><option value="">حساب الصندوق أو البنك</option>{accounts.filter(x=>x.account_type==="asset").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
+    <input placeholder="مرجع التحويل (اختياري)" value={supplierPayment.reference_number} onChange={e=>setSupplierPayment(v=>({...v,reference_number:e.target.value}))}/>
+    <button disabled={busy||!invoices.some(x=>x.status==="posted"&&Number(x.outstanding_amount)>0)}>تسجيل دفعة المورد وترحيل القيد</button>
+   </form>
+   <h3>سجل دفعات الموردين</h3><div className="task-list">{payments.map(x=><article className="task-row" key={x.id}><div><strong>{x.payment_number} · {x.supplier_name} · {Number(x.amount).toLocaleString("ar-SA")} ر.س</strong><small>{x.internal_number} · {x.paid_at} · {x.account_code} {x.account_name} · قيد {x.entry_number}</small></div></article>)}{!payments.length&&<div className="empty-state">لا توجد دفعات موردين مسجلة.</div>}</div>
   </>}
   <button className="secondary-button" onClick={()=>void load()} disabled={busy}><RefreshCw size={16}/> تحديث البيانات</button>
  </section>;
