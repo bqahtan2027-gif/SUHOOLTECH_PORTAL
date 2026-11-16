@@ -20,7 +20,7 @@ The provider's plan information has been used as a planning reference for Node.j
 
 Create the PostgreSQL database under **Databases > PostgreSQL** and record its host, port, database name, username, password, and whether SSL is required. Do not commit these values to GitHub and do not send passwords in chat.
 
-Create/enable the Node.js app under **Websites > Manage Website > Node.js App**. The provider documents GitHub Deploy fields for repository URL, optional GitHub token, build command, and start command. Configure the Node app's application root to `server` if the panel offers that setting. Use:
+Create/enable the Node.js app under **Websites > Manage Website > Node.js App**. The provider documents GitHub Deploy fields for repository URL, optional GitHub token, build command, and start command. If deploying the source repository directly, configure the Node app's application root to `server` if the panel offers that setting. Use:
 - Repository: `https://github.com/bqahtan2027-gif/SUHOOLTECH_PORTAL`
 - Build command: `npm install --omit=dev`
 - Start command: `npm start`
@@ -51,7 +51,7 @@ Run this from a trusted Windows machine with PostgreSQL client tools (`psql`) in
 
 ## Release package, frontend build and IIS
 
-After a successful push to `main`, GitHub Actions creates a downloadable artifact named `suhooltech-w500-release-<commit-sha>`. It contains `web/` (compiled frontend), `api/` (Express app with production dependencies), `database/init/` (all migrations), and this hosting guide. Download the artifact from the successful workflow run; deploy `web/` to the IIS site root and set the Node.js app root to `api/`. This package is a build artifact, not a database backup and not a live deployment.
+After a successful push to `main`, GitHub Actions creates a downloadable artifact named `suhooltech-w500-release-<commit-sha>`. It contains `web/` (compiled frontend plus `web.config`), `api/` (Express app with production dependencies), `database/init/` (all migrations), and this hosting guide. For artifact deployment, upload the contents of `web/` to the IIS site root, set the Node.js app root to `api/`, and use `npm start` as the start command (production dependencies are already included). If deploying the source repository directly instead, use `server/` as the API app root and run `npm install --omit=dev` before `npm start`. This package is a build artifact, not a database backup and not a live deployment.
 
 For a database backup from a trusted Windows machine with PostgreSQL client tools installed, set `DATABASE_URL` and run `scripts/backup-postgres.ps1`. Store the resulting dump outside the website and GitHub. Test restoration to a separate empty database before production use. Never share the database URI or dump publicly.
 
@@ -62,7 +62,7 @@ Build the frontend from the repository root:
 npm install
 npm run build
 ```
-Upload the contents of `dist/` to the IIS website root (not the source tree). Include the repository's root `web.config` to enable client-side route fallback. Keep the API in the Node.js app's separate application root.
+For a locally built deployment, upload the contents of `dist/` plus the root `web.config` to the IIS website root (not the source tree). For the GitHub release artifact, use `web/`, which already includes `web.config`. Keep the API in the Node.js app's separate application root.
 
 Vite build-time API base:
 - Same-origin API mapping: leave `VITE_API_BASE_URL` unset and route `/api` to the Node.js app using a provider-supported IIS reverse-proxy/rewrite mapping.
