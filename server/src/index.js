@@ -99,6 +99,51 @@ app.post("/api/users", auth, admin, async (req, res) => {
 });
 
 
+
+const zatcaConnectionSchema = z.object({
+  integration_mode: z.enum(["manual", "api"]).default("manual"),
+  portal_url: z.string().trim().url().max(1000).optional().or(z.literal("")),
+  api_base_url: z.string().trim().url().max(1000).optional().or(z.literal("")),
+  api_enabled: z.boolean().default(false)
+}).superRefine((value, ctx) => {
+  for (const field of ["portal_url", "api_base_url"]) {
+    const url = value[field];
+    if (url && !url.startsWith("https://")) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: "يجب استخدام رابط HTTPS آمن" });
+  }
+  if (value.api_enabled && (!value.api_base_url || value.integration_mode !== "api")) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["api_base_url"], message: "أدخل عنوان API واختر وضع API قبل التفعيل" });
+  }
+});
+app.get("/api/zatca/connection", auth, admin, async (_req, res) => {
+  try {
+    const result = await pool.query("select integration_mode, portal_url, api_base_url, api_enabled, updated_at from zatca_connection_settings where id=1");
+    res.json({ settings: result.rows[0] || { integration_mode: "manual", portal_url: null, api_base_url: null, api_enabled: false } });
+  } catch (error) {
+    console.error("ZATCA connection settings read failed", error.message);
+    res.status(503).json({ error: "تعذر تحميل إعدادات الربط. تحقق من تطبيق تحديث قاعدة البيانات." });
+  }
+});
+app.put("/api/zatca/connection", auth, admin, async (req, res) => {
+  const parsed = zatcaConnectionSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0]?.message || "تحقق من إعدادات الربط" });
+  const value = parsed.data;
+  try {
+    const result = await pool.query(`
+      insert into zatca_connection_settings (id, integration_mode, portal_url, api_base_url, api_enabled, updated_by, updated_at)
+      values (1, $1, nullif($2, ''), nullif($3, ''), $4, $5, now())
+      on conflict (id) do update set integration_mode=excluded.integration_mode,
+        portal_url=excluded.portal_url, api_base_url=excluded.api_base_url,
+        api_enabled=excluded.api_enabled, updated_by=excluded.updated_by, updated_at=now()
+      returning integration_mode, portal_url, api_base_url, api_enabled, updated_at
+    `, [value.integration_mode, value.portal_url || "", value.api_base_url || "", value.api_enabled, req.user.sub]);
+    await audit(req.user.sub, "zatca.connection_settings_updated", "zatca_connection_settings", "1", { integration_mode: value.integration_mode, api_enabled: value.api_enabled });
+    res.json({ settings: result.rows[0] });
+  } catch (error) {
+    console.error("ZATCA connection settings update failed", error.message);
+    res.status(500).json({ error: "تعذر حفظ إعدادات الربط" });
+  }
+});
+
 const meetingPayloadSchema = z.object({
   title:z.string().trim().min(3).max(200),
   description:z.string().max(4000).optional(),
