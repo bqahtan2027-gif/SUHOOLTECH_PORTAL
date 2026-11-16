@@ -24,6 +24,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-suhool}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-suhooltech}
       JWT_SECRET: ${JWT_SECRET:?Set a random JWT_SECRET of at least 48 characters}
       BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:?Set a one-time bootstrap token}
+      VAULT_ENCRYPTION_KEY: ${VAULT_ENCRYPTION_KEY:?Set a base64-encoded 32-byte vault key}
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
     depends_on:
       db:
