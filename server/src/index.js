@@ -110,6 +110,89 @@ app.patch("/api/tasks/:id/status", auth, async (req, res) => {
   if (!r.rowCount) return res.status(404).json({ error: "المهمة غير موجودة" });
   res.json({ task: r.rows[0] });
 });
+
+async function audit(actorId, action, entityType, entityId, metadata = {}) {
+  try {
+    await pool.query(
+      "insert into audit_logs(actor_id,action,entity_type,entity_id,metadata) values($1,$2,$3,$4,$5)",
+      [actorId || null, action, entityType, entityId == null ? null : String(entityId), JSON.stringify(metadata)]
+    );
+  } catch (error) {
+    console.error("audit log write failed", error.message);
+  }
+}
+
+app.get("/api/dashboard/summary", auth, async (_req, res) => {
+  try {
+    const [projects, tasks, users] = await Promise.all([
+      pool.query("select count(*)::int as total, count(*) filter (where status='active')::int as active, count(*) filter (where status='completed')::int as completed from projects"),
+      pool.query("select count(*)::int as total, count(*) filter (where status='done')::int as completed, count(*) filter (where status in ('todo','in_progress','review','blocked'))::int as open, count(*) filter (where due_date < current_date and status <> 'done')::int as overdue from tasks"),
+      pool.query("select count(*)::int as total, count(*) filter (where active=true)::int as active from users")
+    ]);
+    res.json({ projects: projects.rows[0], tasks: tasks.rows[0], users: users.rows[0] });
+  } catch (error) {
+    console.error("dashboard summary failed", error.message);
+    res.status(503).json({ error: "تعذر تحميل مؤشرات لوحة التحكم. تحقق من تطبيق تحديث قاعدة البيانات." });
+  }
+});
+
+app.get("/api/projects", auth, async (_req, res) => {
+  try {
+    const r = await pool.query(
+      "select p.id,p.name,p.description,p.status,p.start_date,p.due_date,p.created_at,p.updated_at,u.full_name as owner_name from projects p left join users u on u.id=p.owner_id order by p.created_at desc limit 200"
+    );
+    res.json({ projects: r.rows });
+  } catch (error) {
+    console.error("projects list failed", error.message);
+    res.status(503).json({ error: "تعذر تحميل المشاريع. قد تحتاج إلى تطبيق تحديث قاعدة البيانات." });
+  }
+});
+
+app.post("/api/projects", auth, async (req, res) => {
+  const schema = z.object({
+    name: z.string().min(2).max(180),
+    description: z.string().max(4000).optional(),
+    start_date: z.string().date().optional(),
+    due_date: z.string().date().optional()
+  });
+  const p = schema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: "تحقق من اسم المشروع والتواريخ" });
+  try {
+    const r = await pool.query(
+      "insert into projects(name,description,start_date,due_date,owner_id) values($1,$2,$3,$4,$5) returning *",
+      [p.data.name,p.data.description || null,p.data.start_date || null,p.data.due_date || null,req.user.sub]
+    );
+    await audit(req.user.sub, "project.created", "project", r.rows[0].id, { name: r.rows[0].name });
+    res.status(201).json({ project: r.rows[0] });
+  } catch (error) {
+    console.error("project create failed", error.message);
+    res.status(500).json({ error: "تعذر إنشاء المشروع" });
+  }
+});
+
+app.patch("/api/projects/:id/status", auth, async (req, res) => {
+  const p = z.object({ status: z.enum(["active","on_hold","completed","cancelled"]) }).safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: "حالة المشروع غير صالحة" });
+  try {
+    const r = await pool.query("update projects set status=$1,updated_at=now() where id=$2 returning *", [p.data.status,req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: "المشروع غير موجود" });
+    await audit(req.user.sub, "project.status_changed", "project", req.params.id, { status: p.data.status });
+    res.json({ project: r.rows[0] });
+  } catch (error) {
+    console.error("project status update failed", error.message);
+    res.status(500).json({ error: "تعذر تحديث المشروع" });
+  }
+});
+
+app.get("/api/audit-logs", auth, admin, async (req, res) => {
+  const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+  const r = await pool.query(
+    "select a.id,a.action,a.entity_type,a.entity_id,a.metadata,a.created_at,u.full_name as actor_name from audit_logs a left join users u on u.id=a.actor_id order by a.created_at desc limit $1",
+    [limit]
+  );
+  res.json({ logs: r.rows });
+});
+
 app.use((err, _req, res, _next) => { console.error("request error", err.message); res.status(500).json({ error: "حدث خطأ داخلي" }); });
 const port = Number(process.env.PORT || 4000);
 app.listen(port, "0.0.0.0", () => console.log(`Suhool Tech API listening on ${port}`));
