@@ -41,7 +41,7 @@ The API currently uses the `pg` driver and PostgreSQL parameter syntax. The conn
 
 ## Database initialization
 
-Run `database/init/001_core.sql` against the newly created PostgreSQL database using the provider's database tool or an approved PostgreSQL client. Confirm the account has permission to create the `pgcrypto` extension; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
+Run these SQL files in order against the newly created PostgreSQL database using the provider's database tool or an approved PostgreSQL client:\n1. `database/init/001_core.sql`\n2. `database/init/002_projects_dashboard.sql`\n\nThe second migration adds the projects module and dashboard indexes. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
 
 ## Frontend build and IIS
 
@@ -63,7 +63,7 @@ Do not assume IIS URL Rewrite can proxy to the Node app or that a custom port is
 1. Verify `https://YOUR-API-HOST/api/health` returns status `ok` and database `connected`.
 2. Call `POST /api/auth/bootstrap` once with `token`, `name`, `email`, and a unique password of at least 12 characters.
 3. Immediately remove `BOOTSTRAP_TOKEN` from the app settings and restart the API.
-4. Test login, `/api/auth/me`, create/list tasks, and create/list users as admin.
+4. Test login, `/api/auth/me`, `/api/dashboard/summary`, create/list projects, update project status, create/list tasks, update task status, create/list users as admin, and `/api/audit-logs` as admin.
 5. Confirm HTTPS works and that API errors do not expose secrets.
 
 ## W500 operational cautions
