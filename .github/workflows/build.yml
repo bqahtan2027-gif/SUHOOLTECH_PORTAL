@@ -92,6 +92,7 @@ jobs:
           set -e
           mkdir -p release/web release/api/src release/database/init release/hosting
           cp -R dist/. release/web/
+          cp web.config release/web/web.config
           cp server/src/index.js release/api/src/index.js
           cp server/package.json release/api/package.json
           (cd release/api && npm install --omit=dev)
