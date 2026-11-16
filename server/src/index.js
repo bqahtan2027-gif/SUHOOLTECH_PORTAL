@@ -920,7 +920,101 @@ app.get("/api/procurement/goods-receipts",auth,enterpriseManager,async(_req,res)
  catch(error){res.status(503).json({error:"تعذر تحميل سندات الاستلام"});}
 });
 
-// Payroll draft runs: figures are entered and approved by management; statutory calculations are not automated. figures are entered and approved by management; statutory calculations are not automated.
+// Supplier invoices: match billed quantities to received PO quantities and post balanced AP journals.
+app.get("/api/procurement/supplier-invoices",auth,enterpriseManager,async(_req,res)=>{
+ try{
+  const r=await pool.query(`select i.*,p.name as supplier_name,o.order_number,j.entry_number
+   from supplier_invoices i join finance_parties p on p.id=i.supplier_id
+   join purchase_orders o on o.id=i.purchase_order_id
+   left join journal_entries j on j.id=i.journal_entry_id
+   order by i.invoice_date desc,i.created_at desc limit 300`);
+  res.json({invoices:r.rows});
+ }catch(error){console.error("supplier invoices list failed",error.message);res.status(503).json({error:"تعذر تحميل فواتير الموردين"});}
+});
+app.post("/api/procurement/supplier-invoices",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({
+  purchase_order_id:z.string().uuid(),supplier_invoice_number:z.string().trim().min(1).max(100),
+  invoice_date:z.string().date(),due_date:z.string().date().optional(),notes:z.string().max(3000).optional(),
+  lines:z.array(z.object({purchase_order_line_id:z.string().uuid(),quantity:z.coerce.number().positive().max(1000000),unit_price:z.coerce.number().min(0).max(999999999),tax_rate:z.coerce.number().min(0).max(100).default(15)})).min(1).max(100)
+ }).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من رقم الفاتورة والتاريخ وبنودها"});
+ if(new Set(p.data.lines.map(x=>x.purchase_order_line_id)).size!==p.data.lines.length)return res.status(400).json({error:"لا تكرر بند أمر الشراء في الفاتورة"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const order=await db.query("select id,supplier_id,status from purchase_orders where id=$1 for update",[p.data.purchase_order_id]);
+  if(!order.rowCount||!["partially_received","received"].includes(order.rows[0].status))throw new Error("ORDER_NOT_RECEIVED");
+  const lineIds=p.data.lines.map(x=>x.purchase_order_line_id);
+  const poLines=await db.query("select * from purchase_order_lines where order_id=$1 and id=any($2::uuid[]) order by id for update",[p.data.purchase_order_id,lineIds]);
+  if(poLines.rowCount!==lineIds.length)throw new Error("PO_LINE_INVALID");
+  const byId=new Map(poLines.rows.map(x=>[x.id,x]));
+  for(const line of p.data.lines){
+   const poLine=byId.get(line.purchase_order_line_id);
+   const billed=await db.query(`select coalesce(sum(l.quantity),0)::numeric as quantity
+    from supplier_invoice_lines l join supplier_invoices i on i.id=l.invoice_id
+    where l.purchase_order_line_id=$1 and i.status<>'cancelled'`,[poLine.id]);
+   const remaining=Number(poLine.received_quantity)-Number(billed.rows[0].quantity);
+   if(line.quantity>remaining+0.000001)throw new Error("BILL_EXCEEDS_RECEIVED");
+  }
+  const calculated=p.data.lines.map(line=>{
+   const sub=Math.round(line.quantity*line.unit_price*100)/100;
+   const tax=Math.round(sub*line.tax_rate)/100;
+   return {...line,subtotal:sub,tax,lineTotal:sub+tax,description:byId.get(line.purchase_order_line_id).description};
+  });
+  const subtotal=Math.round(calculated.reduce((a,l)=>a+l.subtotal,0)*100)/100;
+  const taxAmount=Math.round(calculated.reduce((a,l)=>a+l.tax,0)*100)/100;
+  const total=Math.round((subtotal+taxAmount)*100)/100;
+  const invoice=await db.query(`insert into supplier_invoices(internal_number,supplier_invoice_number,supplier_id,purchase_order_id,invoice_date,due_date,status,subtotal,tax_amount,total,notes,created_by)
+   values('PINV-'||lpad(nextval('supplier_invoice_number_seq')::text,7,'0'),$1,$2,$3,$4,$5,'draft',$6,$7,$8,$9,$10) returning *`,
+   [p.data.supplier_invoice_number,order.rows[0].supplier_id,p.data.purchase_order_id,p.data.invoice_date,p.data.due_date||null,subtotal,taxAmount,total,p.data.notes||null,req.user.sub]);
+  for(const line of calculated)await db.query(`insert into supplier_invoice_lines(invoice_id,purchase_order_line_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total)
+   values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,[invoice.rows[0].id,line.purchase_order_line_id,line.description,line.quantity,line.unit_price,line.tax_rate,line.subtotal,line.tax,line.lineTotal]);
+  await db.query("commit");
+  await audit(req.user.sub,"procurement.supplier_invoice_created","supplier_invoice",invoice.rows[0].id,{purchase_order_id:p.data.purchase_order_id,total});
+  res.status(201).json({invoice:invoice.rows[0]});
+ }catch(error){
+  await db.query("rollback");
+  const messages={ORDER_NOT_RECEIVED:"لا يمكن تسجيل فاتورة قبل استلام جزء من أمر الشراء على الأقل",PO_LINE_INVALID:"يوجد بند لا يتبع أمر الشراء",BILL_EXCEEDS_RECEIVED:"كمية الفاتورة تتجاوز الكمية المستلمة غير المفوترة"};
+  const known=messages[error.message];
+  if(!known)console.error("supplier invoice create failed",error.message);
+  res.status(known?400:error.code==="23505"?409:500).json({error:known||(error.code==="23505"?"رقم فاتورة المورد مسجل مسبقاً":"تعذر تسجيل فاتورة المورد")});
+ }finally{db.release();}
+});
+app.post("/api/procurement/supplier-invoices/:id/post",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({payable_account_id:z.string().uuid(),inventory_account_id:z.string().uuid(),input_tax_account_id:z.string().uuid()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"حدد حساب الدائنين والمخزون وضريبة المدخلات"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const invoice=await db.query("select * from supplier_invoices where id=$1 for update",[req.params.id]);
+  if(!invoice.rowCount||invoice.rows[0].status!=="draft")throw new Error("INVOICE_NOT_DRAFT");
+  const ids=[p.data.payable_account_id,p.data.inventory_account_id,p.data.input_tax_account_id];
+  if(new Set(ids).size!==3)throw new Error("ACCOUNTS_MUST_DIFFER");
+  const accounts=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[ids]);
+  const types=new Map(accounts.rows.map(a=>[a.id,a.account_type]));
+  if(accounts.rowCount!==3||types.get(p.data.payable_account_id)!=="liability"||types.get(p.data.inventory_account_id)!=="asset"||types.get(p.data.input_tax_account_id)!=="asset")throw new Error("ACCOUNT_TYPES_INVALID");
+  const inv=invoice.rows[0];
+  const journal=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
+   values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),$1,$2,'posted','supplier_invoice',$3,$4,$4,now()) returning id,entry_number`,
+   [inv.invoice_date,"فاتورة مورد "+inv.supplier_invoice_number,inv.id,req.user.sub]);
+  if(Number(inv.subtotal)>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[journal.rows[0].id,p.data.inventory_account_id,"قيمة المشتريات - "+inv.internal_number,inv.subtotal]);
+  if(Number(inv.tax_amount)>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[journal.rows[0].id,p.data.input_tax_account_id,"ضريبة مدخلات - "+inv.internal_number,inv.tax_amount]);
+  await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[journal.rows[0].id,p.data.payable_account_id,"ذمم المورد - "+inv.internal_number,inv.total]);
+  await db.query("update supplier_invoices set status='posted',payable_account_id=$1,inventory_account_id=$2,input_tax_account_id=$3,journal_entry_id=$4,posted_by=$5,posted_at=now() where id=$6",
+   [p.data.payable_account_id,p.data.inventory_account_id,p.data.input_tax_account_id,journal.rows[0].id,req.user.sub,inv.id]);
+  await db.query("commit");
+  await audit(req.user.sub,"procurement.supplier_invoice_posted","supplier_invoice",inv.id,{journal_entry_id:journal.rows[0].id,total:inv.total});
+  res.json({status:"posted",journal:journal.rows[0]});
+ }catch(error){
+  await db.query("rollback");
+  const messages={INVOICE_NOT_DRAFT:"الفاتورة غير موجودة أو سبق ترحيلها",ACCOUNTS_MUST_DIFFER:"يجب اختيار ثلاثة حسابات مختلفة",ACCOUNT_TYPES_INVALID:"تحقق من أن الدائنين التزامات وأن المخزون وضريبة المدخلات أصول"};
+  const known=messages[error.message];
+  if(!known)console.error("supplier invoice posting failed",error.message);
+  res.status(known?400:500).json({error:known||"تعذر ترحيل فاتورة المورد"});
+ }finally{db.release();}
+});
+
+// Payroll draft runs: figures are entered and approved by management; statutory calculations are not automated. figures are entered and approved by management; statutory calculations are not automated. figures are entered and approved by management; statutory calculations are not automated.
 app.get("/api/payroll/runs",auth,enterpriseManager,async(_req,res)=>{const r=await pool.query("select * from payroll_runs order by period_start desc limit 100");res.json({runs:r.rows});});
 app.post("/api/payroll/runs",auth,enterpriseManager,async(req,res)=>{const p=z.object({period_start:z.string().date(),period_end:z.string().date(),items:z.array(z.object({employee_id:z.string().uuid(),basic_salary:z.coerce.number().min(0),allowances:z.coerce.number().min(0).default(0),deductions:z.coerce.number().min(0).default(0),notes:z.string().max(1000).optional()})).min(1).max(500)}).refine(v=>v.period_end>=v.period_start).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من فترة المسير وبيانات الموظفين"});if(p.data.items.some(x=>x.deductions>x.basic_salary+x.allowances))return res.status(400).json({error:"الاستقطاعات لا يمكن أن تتجاوز إجمالي المستحقات"});const db=await pool.connect();try{await db.query("begin");const ids=[...new Set(p.data.items.map(x=>x.employee_id))];if(ids.length!==p.data.items.length)throw new Error("DUPLICATE_EMPLOYEE");const active=await db.query("select id from employees where id=any($1::uuid[]) and status='active'",[ids]);if(active.rowCount!==ids.length)throw new Error("EMPLOYEE_INVALID");const gross=p.data.items.reduce((s,x)=>s+x.basic_salary+x.allowances,0),ded=p.data.items.reduce((s,x)=>s+x.deductions,0);const run=await db.query("insert into payroll_runs(run_number,period_start,period_end,total_gross,total_deductions,total_net,created_by) values('PAY-'||lpad(nextval('payroll_run_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6) returning *",[p.data.period_start,p.data.period_end,gross,ded,gross-ded,req.user.sub]);for(const x of p.data.items){const g=x.basic_salary+x.allowances;await db.query("insert into payroll_items(run_id,employee_id,basic_salary,allowances,deductions,gross_salary,net_salary,notes) values($1,$2,$3,$4,$5,$6,$7,$8)",[run.rows[0].id,x.employee_id,x.basic_salary,x.allowances,x.deductions,g,g-x.deductions,x.notes||null]);}await db.query("commit");await audit(req.user.sub,"payroll.run_created","payroll_run",run.rows[0].id);res.status(201).json({run:run.rows[0]});}catch(e){await db.query("rollback");res.status(400).json({error:e.message==="EMPLOYEE_INVALID"?"يوجد موظف غير نشط أو غير موجود":e.message==="DUPLICATE_EMPLOYEE"?"لا تكرر الموظف في المسير":"تعذر إنشاء مسير الرواتب"});}finally{db.release();}});
 app.get("/api/payroll/runs/:id/items",auth,enterpriseManager,async(req,res)=>{const r=await pool.query("select p.*,e.employee_number,e.full_name from payroll_items p join employees e on e.id=p.employee_id where p.run_id=$1 order by e.full_name",[req.params.id]);res.json({items:r.rows});});
