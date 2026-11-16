@@ -55,6 +55,12 @@ After a successful push to `main`, GitHub Actions creates a downloadable artifac
 
 For a database backup from a trusted Windows machine with PostgreSQL client tools installed, set `DATABASE_URL` and run `scripts/backup-postgres.ps1`. Store the resulting dump outside the website and GitHub. Test restoration to a separate empty database before production use. Never share the database URI or dump publicly.
 
+To restore a custom-format dump, use a separate empty target database first:
+```powershell
+.\\scripts\\restore-postgres.ps1 -BackupFile ".\\backups\\suhooltech-YYYYMMDD-HHMMSS.dump" -TargetDatabaseUrl "postgres://USER:PASSWORD@HOST:5432/EMPTY_TARGET" -ConfirmRestore
+```
+The script requires the explicit `-ConfirmRestore` switch and the exact confirmation word `RESTORE`; it runs `pg_restore` in a single transaction and does not drop existing objects. Do not point it at the live production database without an approved recovery plan. Verify the restored application and keep the exact `VAULT_ENCRYPTION_KEY` available separately.
+
 ## Frontend build and IIS
 
 Build the frontend from the repository root:
