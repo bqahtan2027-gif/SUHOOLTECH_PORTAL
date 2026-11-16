@@ -65,6 +65,7 @@ jobs:
             "018_sales_cost_accounting.sql",
             "019_customer_credit_refunds.sql",
             "020_supplier_payments.sql",
+            "021_zatca_connection_settings.sql",
           ];
 
           try {
