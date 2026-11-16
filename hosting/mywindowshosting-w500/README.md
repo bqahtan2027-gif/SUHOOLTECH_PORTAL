@@ -14,7 +14,7 @@ The provider's plan information has been used as a planning reference for Node.j
 - Main IIS website: compiled Vite/React static files from `dist/`.
 - Node.js App: Express API from the repository's `server/` folder, exposed by the provider's Node.js application feature.
 - PostgreSQL: database created in the same myWindowsHosting account (not an external SaaS).
-- Browser calls API using the same-origin `/api` path where the hosting panel supports mapping/rewrite. If the provider assigns a separate API hostname, set `VITE_API_BASE_URL` at build time and set `CORS_ORIGIN` to the exact website origin.
+- Browser calls API using the same-origin `/api` path where the hosting panel supports mapping/rewrite. The current frontend sends API requests to the same-origin `/api` path; a separate API hostname is not supported by this build. Do not configure one unless the frontend is first updated and tested for a configurable API base URL.
 
 ## Before deployment — provider panel values required
 
@@ -66,7 +66,7 @@ Upload the contents of `dist/` to the IIS website root (not the source tree). In
 
 Vite build-time API base:
 - Same-origin API mapping: leave `VITE_API_BASE_URL` unset and route `/api` to the Node.js app using a provider-supported IIS reverse-proxy/rewrite mapping.
-- Separate API hostname: set `VITE_API_BASE_URL=https://api.example.com` before `npm run build`; configure `CORS_ORIGIN` on the API to the exact frontend origin.
+- Separate API hostname: not supported by the current frontend. Keep `/api` on the same origin until a tested API-base-URL setting is implemented.
 
 Do not assume IIS URL Rewrite can proxy to the Node app or that a custom port is public. Confirm the supported Node.js routing/binding method with myWindowsHosting support.
 
