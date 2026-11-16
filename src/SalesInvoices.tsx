@@ -6,7 +6,8 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
  const [invoices,setInvoices]=useState<Row[]>([]),[parties,setParties]=useState<Row[]>([]),[accounts,setAccounts]=useState<Row[]>([]),[items,setItems]=useState<Row[]>([]),[warehouses,setWarehouses]=useState<Row[]>([]),[receipts,setReceipts]=useState<Row[]>([]);
  const [error,setError]=useState(""),[busy,setBusy]=useState(false);
  const [form,setForm]=useState({party_id:"",issue_date:new Date().toISOString().slice(0,10),due_date:"",warehouse_id:"",item_id:"",description:"",quantity:"1",unit_price:"0",tax_rate:"15",discount_amount:"0"});
- const [posting,setPosting]=useState({invoice_id:"",receivable_account_id:"",revenue_account_id:"",output_tax_account_id:""});\n const [receipt,setReceipt]=useState({invoice_id:"",amount:"",payment_method:"bank_transfer",payment_account_id:"",reference_number:""});
+ const [posting,setPosting]=useState({invoice_id:"",receivable_account_id:"",revenue_account_id:"",output_tax_account_id:""});
+ const [receipt,setReceipt]=useState({invoice_id:"",amount:"",payment_method:"bank_transfer",payment_account_id:"",reference_number:""});
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
  const load=useCallback(async()=>{
   if(!token)return;
@@ -53,6 +54,7 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
   </>}
   <h3>سجل فواتير المبيعات</h3>
   <div className="task-list">{invoices.map(x=><article className="task-row" key={x.id}><div><strong>{x.invoice_number} · {x.customer_name}</strong><small>{x.issue_date} · {Number(x.total).toLocaleString("ar-SA")} ر.س · {x.status==="issued"?"صادرة":x.status==="draft"?"مسودة":x.status}</small><small>المحصل {Number(x.paid_amount||0).toLocaleString("ar-SA")} ر.س · المتبقي {Math.max(0,Number(x.total)-Number(x.paid_amount||0)).toLocaleString("ar-SA")} ر.س</small>{x.journal_entry_id&&<small>قيد {x.entry_number||"مرحّل"} {x.stock_document_number?"· صرف "+x.stock_document_number:""}</small>}</div></article>)}{!invoices.length&&<div className="empty-state">لا توجد فواتير مبيعات.</div>}</div>
-  <h3>سجل سندات القبض</h3><div className="task-list">{receipts.map(x=><article className="task-row" key={x.id}><div><strong>{x.receipt_number} · {x.customer_name||"عميل"}</strong><small>{x.invoice_number||"بدون فاتورة"} · {Number(x.amount).toLocaleString("ar-SA")} ر.س · {x.payment_method==="cash"?"نقدي":x.payment_method==="bank_transfer"?"تحويل بنكي":x.payment_method==="card"?"بطاقة":"أخرى"}</small><small>{x.entry_number?"القيد "+x.entry_number:"قيد محاسبي مرتبط"}</small></div></article>)}{!receipts.length&&<div className="empty-state">لا توجد سندات قبض.</div>}</div>\n  <button className="secondary-button" disabled={busy} onClick={()=>void load()}><RefreshCw size={16}/> تحديث البيانات</button>
+  <h3>سجل سندات القبض</h3><div className="task-list">{receipts.map(x=><article className="task-row" key={x.id}><div><strong>{x.receipt_number} · {x.customer_name||"عميل"}</strong><small>{x.invoice_number||"بدون فاتورة"} · {Number(x.amount).toLocaleString("ar-SA")} ر.س · {x.payment_method==="cash"?"نقدي":x.payment_method==="bank_transfer"?"تحويل بنكي":x.payment_method==="card"?"بطاقة":"أخرى"}</small><small>{x.entry_number?"القيد "+x.entry_number:"قيد محاسبي مرتبط"}</small></div></article>)}{!receipts.length&&<div className="empty-state">لا توجد سندات قبض.</div>}</div>
+  <button className="secondary-button" disabled={busy} onClick={()=>void load()}><RefreshCw size={16}/> تحديث البيانات</button>
  </section>;
 }
