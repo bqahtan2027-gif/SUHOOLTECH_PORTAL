@@ -62,6 +62,7 @@ jobs:
             "015_sales_workflow.sql",
             "016_customer_receipts.sql",
             "017_sales_credit_notes.sql",
+            "018_sales_cost_accounting.sql",
           ];
 
           try {
