@@ -835,7 +835,7 @@ app.post("/api/finance/sales-invoices",auth,financeManager,async(req,res)=>{
   const taxable=Math.round((subtotal-discount)*100)/100;
   let discountAllocated=0;
   const adjustedLines=lines.map((line,index)=>{
-   const share=index===lines.length-1?Math.round((discount-discountAllocated)*100)/100:Math.round(discount*line.sub/subtotal*100)/100;
+   const share=index===lines.length-1?Math.round((discount-discountAllocated)*100)/100:Math.round(discount*line.sub/(subtotal||1)*100)/100;
    discountAllocated+=share;
    const net=Math.max(0,Math.round((line.sub-share)*100)/100);
    const tax=Math.round(net*line.tax_rate)/100;
