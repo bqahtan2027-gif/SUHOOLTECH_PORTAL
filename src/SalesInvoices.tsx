@@ -6,7 +6,7 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
  const [invoices,setInvoices]=useState<Row[]>([]),[parties,setParties]=useState<Row[]>([]),[accounts,setAccounts]=useState<Row[]>([]),[items,setItems]=useState<Row[]>([]),[warehouses,setWarehouses]=useState<Row[]>([]),[receipts,setReceipts]=useState<Row[]>([]),[creditNotes,setCreditNotes]=useState<Row[]>([]);
  const [error,setError]=useState(""),[busy,setBusy]=useState(false);
  const [form,setForm]=useState({party_id:"",issue_date:new Date().toISOString().slice(0,10),due_date:"",warehouse_id:"",item_id:"",description:"",quantity:"1",unit_price:"0",tax_rate:"15",discount_amount:"0"});
- const [posting,setPosting]=useState({invoice_id:"",receivable_account_id:"",revenue_account_id:"",output_tax_account_id:""});
+ const [posting,setPosting]=useState({invoice_id:"",receivable_account_id:"",revenue_account_id:"",output_tax_account_id:"",cogs_account_id:"",inventory_account_id:""});
  const [receipt,setReceipt]=useState({invoice_id:"",amount:"",payment_method:"bank_transfer",payment_account_id:"",reference_number:""});
  const [statementCustomer,setStatementCustomer]=useState(""),[statementFrom,setStatementFrom]=useState(""),[statementTo,setStatementTo]=useState(""),[statement,setStatement]=useState<Row|null>(null);
  const [creditForm,setCreditForm]=useState({original_invoice_id:"",original_invoice_line_id:"",quantity:"1",credit_date:new Date().toISOString().slice(0,10)});
@@ -46,11 +46,13 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
     <button disabled={busy||!parties.length}>حفظ الفاتورة كمسودة</button>
    </form>
    <h3>إصدار الفواتير وترحيلها</h3>
-   <form className="task-create" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}} onSubmit={e=>{e.preventDefault();void send("/api/finance/sales-invoices/"+posting.invoice_id+"/post",{receivable_account_id:posting.receivable_account_id,revenue_account_id:posting.revenue_account_id,output_tax_account_id:posting.output_tax_account_id});}}>
+   <form className="task-create" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}} onSubmit={e=>{e.preventDefault();void send("/api/finance/sales-invoices/"+posting.invoice_id+"/post",{receivable_account_id:posting.receivable_account_id,revenue_account_id:posting.revenue_account_id,output_tax_account_id:posting.output_tax_account_id,cogs_account_id:posting.cogs_account_id||undefined,inventory_account_id:posting.inventory_account_id||undefined});}}>
     <select required value={posting.invoice_id} onChange={e=>setPosting(v=>({...v,invoice_id:e.target.value}))}><option value="">اختر فاتورة مسودة</option>{invoices.filter(x=>x.status==="draft").map(x=><option key={x.id} value={x.id}>{x.invoice_number} · {x.customer_name} · {x.total} ر.س</option>)}</select>
     <select required value={posting.receivable_account_id} onChange={e=>setPosting(v=>({...v,receivable_account_id:e.target.value}))}><option value="">حساب العملاء (أصول)</option>{accounts.filter(x=>x.account_type==="asset").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
     <select required value={posting.revenue_account_id} onChange={e=>setPosting(v=>({...v,revenue_account_id:e.target.value}))}><option value="">حساب الإيرادات</option>{accounts.filter(x=>x.account_type==="revenue").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
     <select required value={posting.output_tax_account_id} onChange={e=>setPosting(v=>({...v,output_tax_account_id:e.target.value}))}><option value="">ضريبة المخرجات (التزامات)</option>{accounts.filter(x=>x.account_type==="liability").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
+    <select value={posting.cogs_account_id} onChange={e=>setPosting(v=>({...v,cogs_account_id:e.target.value}))}><option value="">تكلفة البضاعة المباعة (مصروف)</option>{accounts.filter(x=>x.account_type==="expense").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
+    <select value={posting.inventory_account_id} onChange={e=>setPosting(v=>({...v,inventory_account_id:e.target.value}))}><option value="">المخزون (أصول)</option>{accounts.filter(x=>x.account_type==="asset").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
     <button disabled={busy}>إصدار الفاتورة وتحديث المخزون والحسابات</button>
    </form>
   </>}
