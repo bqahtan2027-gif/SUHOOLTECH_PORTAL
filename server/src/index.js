@@ -965,10 +965,14 @@ app.post("/api/finance/customer-receipts",auth,financeManager,async(req,res)=>{
 
 // Sales credit notes: quantities are capped against the original invoice and returned to stock on posting.
 app.get("/api/finance/sales-credit-notes",auth,async(_req,res)=>{
- try{const r=await pool.query(`select c.*,i.invoice_number,p.name as customer_name,j.entry_number,s.document_number as stock_document_number
+ try{const r=await pool.query(`select c.*,i.invoice_number,p.name as customer_name,j.entry_number,s.document_number as stock_document_number,
+  coalesce(r.refunded_amount,0)::numeric(16,2) refunded_amount,
+  greatest(0,c.customer_credit_amount-coalesce(r.refunded_amount,0))::numeric(16,2) refundable_amount
   from sales_credit_notes c join sales_invoices i on i.id=c.original_invoice_id
   join finance_parties p on p.id=c.party_id left join journal_entries j on j.id=c.journal_entry_id
-  left join stock_documents s on s.id=c.stock_document_id order by c.credit_date desc,c.created_at desc limit 300`);
+  left join stock_documents s on s.id=c.stock_document_id
+  left join lateral (select sum(amount) refunded_amount from sales_credit_note_refunds where credit_note_id=c.id) r on true
+  order by c.credit_date desc,c.created_at desc limit 300`);
   res.json({credit_notes:r.rows});}
  catch(e){console.error("sales credit note list failed",e.message);res.status(503).json({error:"تعذر تحميل الإشعارات الدائنة"});}
 });
@@ -1048,20 +1052,34 @@ app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(re
    }
   }
   if(!inv.receivable_account_id||!inv.revenue_account_id||!inv.output_tax_account_id)throw new Error("ORIGINAL_ACCOUNTS_MISSING");
+  const paid=await db.query("select coalesce(sum(amount),0)::numeric(16,2) amount from sales_receipt_allocations where invoice_id=$1",[inv.id]);
+  const priorCredits=await db.query("select coalesce(sum(total),0)::numeric(16,2) amount from sales_credit_notes where original_invoice_id=$1 and status='issued' and id<>$2",[inv.id,note.id]);
+  const outstanding=Math.max(0,Math.round((Number(inv.total)-Number(paid.rows[0].amount)-Number(priorCredits.rows[0].amount))*100)/100);
+  const arCredit=Math.min(Number(note.total),outstanding);
+  const customerCredit=Math.round((Number(note.total)-arCredit)*100)/100;
+  let customerCreditAccountId=null;
+  if(customerCredit>0){
+   const accountId=req.body.customer_credit_account_id;
+   if(!accountId)throw new Error("CUSTOMER_CREDIT_ACCOUNT_REQUIRED");
+   const account=await db.query("select id,account_type from finance_accounts where id=$1 and is_active=true",[accountId]);
+   if(!account.rowCount||account.rows[0].account_type!=="liability")throw new Error("CUSTOMER_CREDIT_ACCOUNT_INVALID");
+   customerCreditAccountId=accountId;
+  }
   const je=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
    values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),$1,$2,'posted','sales_credit_note',$3,$4,$4,now()) returning id,entry_number`,
    [note.credit_date,"إشعار دائن "+note.credit_note_number+" للفاتورة "+inv.invoice_number,note.id,req.user.sub]);
   if(Number(note.subtotal)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,inv.revenue_account_id,inv.party_id,"عكس إيراد مرتجع "+note.credit_note_number,note.subtotal]);
   if(Number(note.tax_amount)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,inv.output_tax_account_id,inv.party_id,"عكس ضريبة مرتجع "+note.credit_note_number,note.tax_amount]);
-  await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,inv.receivable_account_id,inv.party_id,"تخفيض ذمم العميل "+note.credit_note_number,note.total]);
+  if(arCredit>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,inv.receivable_account_id,inv.party_id,"تخفيض ذمم العميل "+note.credit_note_number,arCredit]);
+  if(customerCredit>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,customerCreditAccountId,inv.party_id,"رصيد دائن للعميل "+note.credit_note_number,customerCredit]);
   if(returnedCost>0){
    await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[je.rows[0].id,inv.inventory_account_id,"إعادة تكلفة المخزون "+note.credit_note_number,returnedCost]);
    await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[je.rows[0].id,inv.cogs_account_id,"عكس تكلفة البضاعة المباعة "+note.credit_note_number,returnedCost]);
   }
-  await db.query("update sales_credit_notes set status='issued',journal_entry_id=$1,stock_document_id=$2,posted_by=$3,posted_at=now() where id=$4",[je.rows[0].id,stockDoc?.id||null,req.user.sub,note.id]);
+  await db.query("update sales_credit_notes set status='issued',journal_entry_id=$1,stock_document_id=$2,posted_by=$3,posted_at=now(),customer_credit_amount=$4,customer_credit_account_id=$5 where id=$6",[je.rows[0].id,stockDoc?.id||null,req.user.sub,customerCredit,customerCreditAccountId,note.id]);
   await db.query("commit");await audit(req.user.sub,"finance.sales_credit_note_posted","sales_credit_note",note.id,{journal_entry_id:je.rows[0].id,stock_document_id:stockDoc?.id||null,total:note.total});
   res.json({status:"issued",journal:je.rows[0],stock_document:stockDoc});
- }catch(e){await db.query("rollback");const messages={CREDIT_NOTE_NOT_DRAFT:"الإشعار الدائن غير موجود أو سبق ترحيله",ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير صالحة",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المتاحة للإرجاع",RETURN_WAREHOUSE_REQUIRED:"مستودع الفاتورة الأصلية غير متاح لاستلام المرتجع",ORIGINAL_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات محاسبية مكتملة",ORIGINAL_COST_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات المخزون والتكلفة",RETURN_COST_UNAVAILABLE:"تعذر ترحيل المرتجع لأن تكلفة الصنف التاريخية غير محفوظة في الفاتورة الأصلية"};const msg=messages[e.message];if(!msg)console.error("sales credit note posting failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر ترحيل الإشعار الدائن"});}
+ }catch(e){await db.query("rollback");const messages={CREDIT_NOTE_NOT_DRAFT:"الإشعار الدائن غير موجود أو سبق ترحيله",ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير صالحة",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المتاحة للإرجاع",RETURN_WAREHOUSE_REQUIRED:"مستودع الفاتورة الأصلية غير متاح لاستلام المرتجع",ORIGINAL_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات محاسبية مكتملة",ORIGINAL_COST_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات المخزون والتكلفة",RETURN_COST_UNAVAILABLE:"تعذر ترحيل المرتجع لأن تكلفة الصنف التاريخية غير محفوظة في الفاتورة الأصلية",CUSTOMER_CREDIT_ACCOUNT_REQUIRED:"اختر حساب التزامات أرصدة العملاء الدائنة",CUSTOMER_CREDIT_ACCOUNT_INVALID:"حساب رصيد العميل الدائن يجب أن يكون حساب التزامات نشطاً"};const msg=messages[e.message];if(!msg)console.error("sales credit note posting failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر ترحيل الإشعار الدائن"});}
  finally{db.release();}
 });
 
