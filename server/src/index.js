@@ -698,6 +698,56 @@ app.get("/api/audit-logs", auth, admin, async (req, res) => {
   res.json({ logs: r.rows });
 });
 
+
+const inventoryManager=(req,res,next)=>["admin","manager"].includes(req.user.role)?next():res.status(403).json({error:"هذه العملية متاحة للمدير ومدير النظام"});
+app.get("/api/inventory/warehouses",auth,async(_req,res)=>{
+ try{const r=await pool.query("select id,warehouse_code,name,location from warehouses where is_active=true order by name");res.json({warehouses:r.rows});}
+ catch(error){console.error("warehouses list failed",error.message);res.status(503).json({error:"تعذر تحميل المستودعات. تحقق من تحديث قاعدة البيانات."});}
+});
+app.post("/api/inventory/warehouses",auth,inventoryManager,async(req,res)=>{
+ const p=z.object({warehouse_code:z.string().trim().min(2).max(32),name:z.string().trim().min(2).max(160),location:z.string().max(500).optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من رمز واسم المستودع"});
+ try{const r=await pool.query("insert into warehouses(warehouse_code,name,location,created_by) values($1,$2,$3,$4) returning id,warehouse_code,name,location",[p.data.warehouse_code,p.data.name,p.data.location||null,req.user.sub]);await audit(req.user.sub,"inventory.warehouse_created","warehouse",r.rows[0].id);res.status(201).json({warehouse:r.rows[0]});}
+ catch(error){res.status(error.code==="23505"?409:500).json({error:error.code==="23505"?"رمز المستودع مستخدم مسبقاً":"تعذر إنشاء المستودع"});}
+});
+app.get("/api/inventory/items",auth,async(_req,res)=>{
+ try{const r=await pool.query("select id,sku,name,unit,cost_price,reorder_level from inventory_items where is_active=true order by name");res.json({items:r.rows});}
+ catch(error){console.error("inventory items failed",error.message);res.status(503).json({error:"تعذر تحميل الأصناف. تحقق من تحديث قاعدة البيانات."});}
+});
+app.post("/api/inventory/items",auth,inventoryManager,async(req,res)=>{
+ const p=z.object({sku:z.string().trim().min(1).max(80),name:z.string().trim().min(2).max(200),unit:z.string().trim().min(1).max(30).default("piece"),cost_price:z.coerce.number().min(0).max(999999999),reorder_level:z.coerce.number().min(0).max(999999999)}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من بيانات الصنف والتكلفة وحد إعادة الطلب"});
+ try{const r=await pool.query("insert into inventory_items(sku,name,unit,cost_price,reorder_level) values($1,$2,$3,$4,$5) returning id,sku,name,unit,cost_price,reorder_level",[p.data.sku,p.data.name,p.data.unit,p.data.cost_price,p.data.reorder_level]);await audit(req.user.sub,"inventory.item_created","inventory_item",r.rows[0].id);res.status(201).json({item:r.rows[0]});}
+ catch(error){res.status(error.code==="23505"?409:500).json({error:error.code==="23505"?"رمز الصنف مستخدم مسبقاً":"تعذر إنشاء الصنف"});}
+});
+app.get("/api/inventory/balances",auth,async(_req,res)=>{
+ try{const r=await pool.query("select b.warehouse_id,b.item_id,w.name as warehouse_name,i.sku,i.name as item_name,i.unit,b.quantity,i.reorder_level from stock_balances b join warehouses w on w.id=b.warehouse_id join inventory_items i on i.id=b.item_id order by w.name,i.name");res.json({balances:r.rows});}
+ catch(error){console.error("stock balances failed",error.message);res.status(503).json({error:"تعذر تحميل أرصدة المخزون. تحقق من تحديث قاعدة البيانات."});}
+});
+app.post("/api/inventory/documents",auth,inventoryManager,async(req,res)=>{
+ const p=z.object({document_type:z.enum(["receipt","issue"]),warehouse_id:z.string().uuid(),item_id:z.string().uuid(),quantity:z.coerce.number().positive().max(999999999),unit_cost:z.coerce.number().min(0).max(999999999).default(0),notes:z.string().max(1000).optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من نوع الحركة والمستودع والصنف والكمية"});
+ const client=await pool.connect();
+ try{
+  await client.query("begin");
+  const wh=await client.query("select id from warehouses where id=$1 and is_active=true",[p.data.warehouse_id]);
+  const item=await client.query("select id from inventory_items where id=$1 and is_active=true",[p.data.item_id]);
+  if(!wh.rowCount||!item.rowCount){await client.query("rollback");return res.status(400).json({error:"المستودع أو الصنف غير موجود أو غير نشط"});}
+  const balance=await client.query("select quantity from stock_balances where warehouse_id=$1 and item_id=$2 for update",[p.data.warehouse_id,p.data.item_id]);
+  const available=Number(balance.rows[0]?.quantity||0);
+  if(p.data.document_type==="issue"&&available<p.data.quantity){await client.query("rollback");return res.status(409).json({error:"الكمية المتاحة غير كافية للصرف"});}
+  const number="STK-"+String(Date.now())+"-"+String(Math.floor(Math.random()*1000)).padStart(3,"0");
+  const doc=await client.query("insert into stock_documents(document_number,document_type,status,source_warehouse_id,destination_warehouse_id,notes,created_by,posted_by,posted_at) values($1,$2,'posted',$3,$4,$5,$6,$6,now()) returning id,document_number,status,document_type",[number,p.data.document_type,p.data.document_type==="issue"?p.data.warehouse_id:null,p.data.document_type==="receipt"?p.data.warehouse_id:null,p.data.notes||null,req.user.sub]);
+  await client.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[doc.rows[0].id,p.data.item_id,p.data.quantity,p.data.unit_cost]);
+  const delta=p.data.document_type==="receipt"?p.data.quantity:-p.data.quantity;
+  await client.query("insert into stock_balances(warehouse_id,item_id,quantity) values($1,$2,$3) on conflict(warehouse_id,item_id) do update set quantity=stock_balances.quantity+excluded.quantity,updated_at=now()",[p.data.warehouse_id,p.data.item_id,delta]);
+  await client.query("commit");
+  await audit(req.user.sub,"inventory.stock_"+p.data.document_type,"stock_document",doc.rows[0].id,{quantity:p.data.quantity,sku:p.data.item_id});
+  res.status(201).json({document:doc.rows[0]});
+ }catch(error){await client.query("rollback");console.error("stock document failed",error.message);res.status(500).json({error:"تعذر تسجيل حركة المخزون"});}
+ finally{client.release();}
+});
+
 app.use((err, _req, res, _next) => { console.error("request error", err.message); res.status(500).json({ error: "حدث خطأ داخلي" }); });
 const port = Number(process.env.PORT || 4000);
 app.listen(port, "0.0.0.0", () => console.log(`Suhool Tech API listening on ${port}`));
