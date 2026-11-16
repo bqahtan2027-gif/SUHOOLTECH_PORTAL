@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Boxes, PackagePlus, ArrowDownToLine, ArrowUpFromLine, RefreshCw } from "lucide-react";
+import { Boxes, PackagePlus, RefreshCw } from "lucide-react";
 
 type Warehouse={id:string;warehouse_code:string;name:string;location?:string};
 type Item={id:string;sku:string;name:string;unit:string;cost_price:string;reorder_level:string};
@@ -12,7 +12,7 @@ export default function Inventory({token,role}:{token:string|null;role:string}){
  const [move,setMove]=useState({document_type:"receipt",warehouse_id:"",item_id:"",quantity:"1",unit_cost:"0",notes:""});
  const canManage=role==="admin"||role==="manager";
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
- const load=useCallback(async()=>{try{const [w,i,b]=await Promise.all(["/api/inventory/warehouses","/api/inventory/items","/api/inventory/balances"].map(url=>fetch(url,{headers})));const data=await Promise.all([w,i,b].map(r=>r.json()));if([w,i,b].some(r=>!r.ok))throw new Error(data.find((x,j)=>![w,i,b][j].ok)?.error||"تعذر تحميل المخزون");setWarehouses(data[0].warehouses);setItems(data[1].items);setBalances(data[2].balances);setMove(v=>({...v,warehouse_id:v.warehouse_id||data[0].warehouses[0]?.id||"",item_id:v.item_id||data[1].items[0]?.id||""}));setError("");}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات");}},[token]);
+ const load=useCallback(async()=>{try{const [w,i,b]=await Promise.all(["/api/inventory/warehouses","/api/inventory/items","/api/inventory/balances"].map(url=>fetch(url,{headers})));const data=await Promise.all([w,i,b].map(r=>r.json()));if([w,i,b].some(r=>!r.ok))throw new Error(data.find((_,j)=>![w,i,b][j].ok)?.error||"تعذر تحميل المخزون");setWarehouses(data[0].warehouses);setItems(data[1].items);setBalances(data[2].balances);setMove(v=>({...v,warehouse_id:v.warehouse_id||data[0].warehouses[0]?.id||"",item_id:v.item_id||data[1].items[0]?.id||""}));setError("");}catch(e){setError(e instanceof Error?e.message:"تعذر تحميل البيانات");}},[token]);
  useEffect(()=>{void load();},[load]);
  const submit=async(url:string,body:unknown)=>{setBusy(true);setError("");try{const r=await fetch(url,{method:"POST",headers,body:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر حفظ البيانات");await load();return true;}catch(e){setError(e instanceof Error?e.message:"تعذر حفظ البيانات");return false;}finally{setBusy(false);}};
  const createWarehouse=async(e:React.FormEvent)=>{e.preventDefault();if(await submit("/api/inventory/warehouses",warehouseForm))setWarehouseForm({warehouse_code:"",name:"",location:""});};
