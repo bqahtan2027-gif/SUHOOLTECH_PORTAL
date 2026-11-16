@@ -41,13 +41,17 @@ The API currently uses the `pg` driver and PostgreSQL parameter syntax. The conn
 
 ## Database initialization
 
-Run these SQL files in order against the newly created PostgreSQL database using the provider's database tool or an approved PostgreSQL client:\n1. `database/init/001_core.sql`\n2. `database/init/002_projects_dashboard.sql`\n\nThe second migration adds the projects module and dashboard indexes. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
+Run these SQL files in order against the newly created PostgreSQL database using the provider's database tool or an approved PostgreSQL client:
+1. `database/init/001_core.sql`
+2. `database/init/002_projects_dashboard.sql`
+
+The second migration adds the projects module and dashboard indexes. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
 
 ## Frontend build and IIS
 
 Build the frontend from the repository root:
 ```bash
-npm ci
+npm install
 npm run build
 ```
 Upload the contents of `dist/` to the IIS website root (not the source tree). Include the repository's root `web.config` to enable client-side route fallback. Keep the API in the Node.js app's separate application root.
