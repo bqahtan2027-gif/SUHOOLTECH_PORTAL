@@ -832,15 +832,23 @@ app.post("/api/finance/sales-invoices",auth,financeManager,async(req,res)=>{
   const subtotal=Math.round(lines.reduce((s,l)=>s+l.sub,0)*100)/100;
   if(p.data.discount_amount>subtotal)throw new Error("DISCOUNT_INVALID");
   const discount=Math.round(p.data.discount_amount*100)/100;
-  const taxable=subtotal-discount;
-  const taxAmount=Math.round(lines.reduce((s,l)=>s+l.tax,0)*100)/100;
+  const taxable=Math.round((subtotal-discount)*100)/100;
+  let discountAllocated=0;
+  const adjustedLines=lines.map((line,index)=>{
+   const share=index===lines.length-1?Math.round((discount-discountAllocated)*100)/100:Math.round(discount*line.sub/subtotal*100)/100;
+   discountAllocated+=share;
+   const net=Math.max(0,Math.round((line.sub-share)*100)/100);
+   const tax=Math.round(net*line.tax_rate)/100;
+   return {...line,tax,total:Math.round((net+tax)*100)/100};
+  });
+  const taxAmount=Math.round(adjustedLines.reduce((s,l)=>s+l.tax,0)*100)/100;
   const total=Math.round((taxable+taxAmount)*100)/100;
   const n=await db.query("select nextval('sales_invoice_number_seq') n");
   const number="INV-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
   const inv=await db.query(`insert into sales_invoices(invoice_number,party_id,customer_name,customer_tax_number,issue_date,due_date,warehouse_id,status,subtotal,discount_amount,tax_rate,tax_amount,total,created_by)
    values($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,15,$10,$11,$12) returning *`,
    [number,p.data.party_id,party.rows[0].name,party.rows[0].tax_number,p.data.issue_date,p.data.due_date||null,p.data.warehouse_id||null,subtotal,discount,taxAmount,total,req.user.sub]);
-  for(const l of lines)await db.query("insert into sales_invoice_lines(invoice_id,item_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total) values($1,$2,$3,$4,$5,$6,$7,$8,$9)",[inv.rows[0].id,l.item_id||null,l.description,l.quantity,l.unit_price,l.tax_rate,l.sub,l.tax,l.total]);
+  for(const l of adjustedLines)await db.query("insert into sales_invoice_lines(invoice_id,item_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total) values($1,$2,$3,$4,$5,$6,$7,$8,$9)",[inv.rows[0].id,l.item_id||null,l.description,l.quantity,l.unit_price,l.tax_rate,l.sub,l.tax,l.total]);
   await db.query("commit");await audit(req.user.sub,"finance.sales_invoice_created","sales_invoice",inv.rows[0].id,{invoice_number:number,total});
   res.status(201).json({invoice:inv.rows[0]});
  }catch(e){await db.query("rollback");const messages={CUSTOMER_INVALID:"العميل غير موجود أو ليس عميلاً",WAREHOUSE_INVALID:"المستودع غير موجود أو غير نشط",DISCOUNT_INVALID:"الخصم يتجاوز قيمة الفاتورة"};const msg=messages[e.message];if(!msg)console.error("sales invoice create failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر إنشاء فاتورة المبيعات"});}
