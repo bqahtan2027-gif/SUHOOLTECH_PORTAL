@@ -96,6 +96,88 @@ app.post("/api/users", auth, admin, async (req, res) => {
     res.status(201).json({ user: r.rows[0] });
   } catch (e) { res.status(e.code === "23505" ? 409 : 500).json({ error: e.code === "23505" ? "البريد مسجل مسبقاً" : "تعذر إنشاء المستخدم" }); }
 });
+
+const quoteItemSchema = z.object({
+  description: z.string().trim().min(2).max(500),
+  quantity: z.number().positive().max(1000000),
+  unit_price: z.number().min(0).max(100000000)
+});
+const quoteSchema = z.object({
+  client_name: z.string().trim().min(2).max(180),
+  client_email: z.string().email().max(254).optional().or(z.literal("")),
+  client_phone: z.string().max(40).optional(),
+  valid_until: z.string().date().optional(),
+  discount_amount: z.number().min(0).max(100000000).default(0),
+  notes: z.string().max(4000).optional(),
+  items: z.array(quoteItemSchema).min(1).max(100)
+});
+const quoteWriter = (req, res, next) => {
+  if (!["admin", "manager"].includes(req.user.role)) return res.status(403).json({ error: "إنشاء وتعديل عروض الأسعار متاح للمدير ومدير النظام" });
+  next();
+};
+app.get("/api/quotes", auth, async (_req, res) => {
+  try {
+    const r = await pool.query(`
+      select q.id,q.quote_number,q.client_name,q.client_email,q.client_phone,q.status,
+        q.subtotal,q.discount_amount,q.tax_rate,q.tax_amount,q.total,q.valid_until,q.notes,q.created_at,
+        coalesce(json_agg(json_build_object('id',i.id,'description',i.description,'quantity',i.quantity,'unit_price',i.unit_price,'line_total',i.line_total) order by i.id)
+          filter (where i.id is not null),'[]'::json) as items
+      from quotes q left join quote_items i on i.quote_id=q.id
+      group by q.id order by q.created_at desc limit 200
+    `);
+    res.json({ quotes: r.rows });
+  } catch (error) {
+    console.error("quotes list failed", error.message);
+    res.status(503).json({ error: "تعذر تحميل عروض الأسعار. تحقق من تطبيق تحديث قاعدة البيانات." });
+  }
+});
+app.post("/api/quotes", auth, quoteWriter, async (req, res) => {
+  const p = quoteSchema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: "تحقق من بيانات العميل وبنود العرض والأسعار" });
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const items = p.data.items.map(item => ({ ...item, line_total: Math.round(item.quantity * item.unit_price * 100) / 100 }));
+    const subtotal = Math.round(items.reduce((sum, item) => sum + item.line_total, 0) * 100) / 100;
+    if (p.data.discount_amount > subtotal) { await client.query("rollback"); return res.status(400).json({ error: "الخصم لا يمكن أن يتجاوز المجموع قبل الضريبة" }); }
+    const discount = Math.round(p.data.discount_amount * 100) / 100;
+    const taxable = Math.round((subtotal - discount) * 100) / 100;
+    const taxRate = 15;
+    const tax = Math.round(taxable * taxRate) / 100;
+    const total = Math.round((taxable + tax) * 100) / 100;
+    const numberResult = await client.query("select nextval('quote_number_seq') as n");
+    const quoteNumber = `QT-${new Date().getFullYear()}-${String(numberResult.rows[0].n).padStart(6, "0")}`;
+    const created = await client.query(
+      "insert into quotes(quote_number,client_name,client_email,client_phone,subtotal,discount_amount,tax_rate,tax_amount,total,valid_until,notes,created_by) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) returning *",
+      [quoteNumber,p.data.client_name,p.data.client_email || null,p.data.client_phone || null,subtotal,discount,taxRate,tax,p.data.valid_until || null,p.data.notes || null,req.user.sub]
+    );
+    for (const item of items) {
+      await client.query("insert into quote_items(quote_id,description,quantity,unit_price,line_total) values($1,$2,$3,$4,$5)",
+        [created.rows[0].id,item.description,item.quantity,item.unit_price,item.line_total]);
+    }
+    await client.query("commit");
+    await audit(req.user.sub, "quote.created", "quote", created.rows[0].id, { quote_number: quoteNumber, total });
+    res.status(201).json({ quote: { ...created.rows[0], items } });
+  } catch (error) {
+    await client.query("rollback");
+    console.error("quote create failed", error.message);
+    res.status(500).json({ error: "تعذر إنشاء عرض السعر" });
+  } finally { client.release(); }
+});
+app.patch("/api/quotes/:id/status", auth, quoteWriter, async (req, res) => {
+  const p = z.object({ status: z.enum(["draft","sent","approved","rejected","expired"]) }).safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: "حالة العرض غير صالحة" });
+  try {
+    const r = await pool.query("update quotes set status=$1,updated_at=now() where id=$2 returning id,quote_number,status", [p.data.status,req.params.id]);
+    if (!r.rowCount) return res.status(404).json({ error: "عرض السعر غير موجود" });
+    await audit(req.user.sub, "quote.status_changed", "quote", req.params.id, { status: p.data.status });
+    res.json({ quote: r.rows[0] });
+  } catch (error) {
+    console.error("quote status update failed", error.message);
+    res.status(500).json({ error: "تعذر تحديث حالة العرض" });
+  }
+});
+
 app.get("/api/tasks", auth, async (_req, res) => {
   const r = await pool.query("select id,title,description,status,priority,due_date,created_at from tasks order by created_at desc limit 200");
   res.json({ tasks: r.rows });
