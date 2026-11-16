@@ -302,7 +302,7 @@ app.post("/api/documents", auth, async (req, res) => {
     res.status(500).json({ error: "تعذر إنشاء المستند" });
   }
 });
-app.patch("/api/documents/:id/status", auth, documentManager, async (req, res) => {
+app.patch("/api/documents/:id/status", auth, async (req, res) => {
   const parsed = z.object({status:z.enum(["review","approved","rejected","draft","archived"])}).safeParse(req.body);
   if (!parsed.success) return res.status(400).json({error:"حالة المستند غير صالحة"});
   const transitions = {
@@ -312,11 +312,13 @@ app.patch("/api/documents/:id/status", auth, documentManager, async (req, res) =
   const client = await pool.connect();
   try {
     await client.query("begin");
-    const current = await client.query("select id,status from documents where id=$1 for update",[req.params.id]);
+    const current = await client.query("select id,status,created_by from documents where id=$1 for update",[req.params.id]);
     if (!current.rowCount) { await client.query("rollback"); return res.status(404).json({error:"المستند غير موجود"}); }
     const from = current.rows[0].status;
     const to = parsed.data.status;
-    if (!transitions[from]?.includes(to)) {
+    const manager = ["admin","manager"].includes(req.user.role);
+    const ownerSubmission = current.rows[0].created_by === req.user.sub && from === "draft" && to === "review";
+    if ((!manager && !ownerSubmission) || !transitions[from]?.includes(to)) {
       await client.query("rollback");
       return res.status(409).json({error:"لا يمكن تنفيذ هذا الانتقال في دورة اعتماد المستند"});
     }
