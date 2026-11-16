@@ -42,12 +42,12 @@ The API currently uses the `pg` driver and PostgreSQL parameter syntax. The conn
 
 ## Database initialization
 
-Run all 21 SQL migrations in numeric order. The repository includes a PowerShell runner at `scripts/apply-migrations.ps1`:
+Run all 22 SQL migrations in numeric order. The repository includes a PowerShell runner at `scripts/apply-migrations.ps1`:
 ```powershell
 $env:DATABASE_URL = "postgres://USER:PASSWORD@HOST:5432/DATABASE"
 .\\scripts\\apply-migrations.ps1
 ```
-Run this from a trusted Windows machine with PostgreSQL client tools (`psql`) installed. Alternatively, execute every `database/init/*.sql` file in ascending numeric order through the provider's PostgreSQL tool. Stop immediately on the first error; do not skip a migration. CI applies all migrations twice to check repeatability. The migrations cover core access/projects, HR, documents, procurement, calendar, encrypted vault, inventory, finance, sales/purchases workflows, and ZATCA connection settings. Confirm the database user can create the `pgcrypto` extension used by migration 001. Do not expose PostgreSQL publicly.
+Run this from a trusted Windows machine with PostgreSQL client tools (`psql`) installed. Alternatively, execute every `database/init/*.sql` file in ascending numeric order through the provider's PostgreSQL tool. Stop immediately on the first error; do not skip a migration. CI applies all migrations twice to check repeatability. The migrations cover core access/projects, HR, documents, procurement, calendar, encrypted vault, inventory, finance, sales/purchases workflows, and ZATCA connection settings and payroll accounting lifecycle. Confirm the database user can create the `pgcrypto` extension used by migration 001. Do not expose PostgreSQL publicly.
 
 ## Release package, frontend build and IIS
 
