@@ -52,6 +52,9 @@ jobs:
             "006_admin_services.sql",
             "007_calendar.sql",
             "008_vault.sql",
+            "009_inventory.sql",
+            "010_finance.sql",
+            "011_zatca.sql",
           ];
 
           try {
