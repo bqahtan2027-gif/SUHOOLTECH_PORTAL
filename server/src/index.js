@@ -991,7 +991,8 @@ app.post("/api/finance/sales-credit-notes",auth,financeManager,async(req,res)=>{
    if(requested.quantity>Number(line.quantity)-Number(returned.rows[0].quantity)+0.0005)throw new Error("RETURN_QUANTITY_EXCEEDED");
    const subtotal=Math.round(Number(line.line_subtotal)*requested.quantity/Number(line.quantity)*100)/100;
    const tax=Math.round(Number(line.line_tax)*requested.quantity/Number(line.quantity)*100)/100;
-   creditLines.push({...line,quantity:requested.quantity,subtotal,tax,total:subtotal+tax});
+   const costTotal=line.cost_unit===null||line.cost_unit===undefined?null:Math.round(Number(line.cost_unit)*requested.quantity*100)/100;
+   creditLines.push({...line,quantity:requested.quantity,subtotal,tax,total:subtotal+tax,costTotal});
   }
   const subtotal=Math.round(creditLines.reduce((s,l)=>s+l.subtotal,0)*100)/100;
   const tax=Math.round(creditLines.reduce((s,l)=>s+l.tax,0)*100)/100;
@@ -1001,8 +1002,8 @@ app.post("/api/finance/sales-credit-notes",auth,financeManager,async(req,res)=>{
   const number="SCN-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
   const note=await db.query(`insert into sales_credit_notes(credit_note_number,original_invoice_id,party_id,credit_date,subtotal,tax_amount,total,created_by)
    values($1,$2,$3,$4,$5,$6,$7,$8) returning *`,[number,inv.id,inv.party_id,p.data.credit_date,subtotal,tax,total,req.user.sub]);
-  for(const l of creditLines)await db.query(`insert into sales_credit_note_lines(credit_note_id,original_invoice_line_id,item_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total)
-   values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[note.rows[0].id,l.id,l.item_id,l.description,l.quantity,l.unit_price,l.tax_rate,l.subtotal,l.tax,l.total]);
+  for(const l of creditLines)await db.query(`insert into sales_credit_note_lines(credit_note_id,original_invoice_line_id,item_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total,cost_total)
+   values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,[note.rows[0].id,l.id,l.item_id,l.description,l.quantity,l.unit_price,l.tax_rate,l.subtotal,l.tax,l.total,l.costTotal]);
   await db.query("commit");await audit(req.user.sub,"finance.sales_credit_note_created","sales_credit_note",note.rows[0].id,{credit_note_number:number,total});
   res.status(201).json({credit_note:note.rows[0]});
  }catch(e){await db.query("rollback");const messages={ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير موجودة أو غير صادرة",ORIGINAL_LINE_INVALID:"أحد البنود لا يتبع الفاتورة الأصلية",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المباعة بعد احتساب المرتجعات السابقة",CREDIT_NOTE_ZERO:"قيمة الإشعار الدائن يجب أن تكون أكبر من صفر"};const msg=messages[e.message];if(!msg)console.error("sales credit note create failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر إنشاء الإشعار الدائن"});}
