@@ -92,8 +92,8 @@ jobs:
           node --input-type=module <<'NODE'
           import { readFile, readdir } from "node:fs/promises";
           const runner = await readFile("scripts/apply-migrations.ps1", "utf8");
-          const declared = [...runner.matchAll(/"(\\d{3}_[^"]+\\.sql)"/g)].map((match) => match[1]);
-          const actual = (await readdir("database/init")).filter((name) => /^\\d{3}_.+\\.sql$/.test(name)).sort();
+          const declared = [...runner.matchAll(/"(\d{3}_[^"]+\.sql)"/g)].map((match) => match[1]);
+          const actual = (await readdir("database/init")).filter((name) => /^\d{3}_.+\.sql$/.test(name)).sort();
           if (JSON.stringify(declared) !== JSON.stringify(actual)) {
             console.error({ declared, actual });
             process.exit(1);
