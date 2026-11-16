@@ -1468,6 +1468,64 @@ app.get("/api/payroll/runs",auth,enterpriseManager,async(_req,res)=>{const r=awa
 app.post("/api/payroll/runs",auth,enterpriseManager,async(req,res)=>{const p=z.object({period_start:z.string().date(),period_end:z.string().date(),items:z.array(z.object({employee_id:z.string().uuid(),basic_salary:z.coerce.number().min(0),allowances:z.coerce.number().min(0).default(0),deductions:z.coerce.number().min(0).default(0),notes:z.string().max(1000).optional()})).min(1).max(500)}).refine(v=>v.period_end>=v.period_start).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من فترة المسير وبيانات الموظفين"});if(p.data.items.some(x=>x.deductions>x.basic_salary+x.allowances))return res.status(400).json({error:"الاستقطاعات لا يمكن أن تتجاوز إجمالي المستحقات"});const db=await pool.connect();try{await db.query("begin");const ids=[...new Set(p.data.items.map(x=>x.employee_id))];if(ids.length!==p.data.items.length)throw new Error("DUPLICATE_EMPLOYEE");const active=await db.query("select id from employees where id=any($1::uuid[]) and status='active'",[ids]);if(active.rowCount!==ids.length)throw new Error("EMPLOYEE_INVALID");const gross=p.data.items.reduce((s,x)=>s+x.basic_salary+x.allowances,0),ded=p.data.items.reduce((s,x)=>s+x.deductions,0);const run=await db.query("insert into payroll_runs(run_number,period_start,period_end,total_gross,total_deductions,total_net,created_by) values('PAY-'||lpad(nextval('payroll_run_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6) returning *",[p.data.period_start,p.data.period_end,gross,ded,gross-ded,req.user.sub]);for(const x of p.data.items){const g=x.basic_salary+x.allowances;await db.query("insert into payroll_items(run_id,employee_id,basic_salary,allowances,deductions,gross_salary,net_salary,notes) values($1,$2,$3,$4,$5,$6,$7,$8)",[run.rows[0].id,x.employee_id,x.basic_salary,x.allowances,x.deductions,g,g-x.deductions,x.notes||null]);}await db.query("commit");await audit(req.user.sub,"payroll.run_created","payroll_run",run.rows[0].id);res.status(201).json({run:run.rows[0]});}catch(e){await db.query("rollback");res.status(400).json({error:e.message==="EMPLOYEE_INVALID"?"يوجد موظف غير نشط أو غير موجود":e.message==="DUPLICATE_EMPLOYEE"?"لا تكرر الموظف في المسير":"تعذر إنشاء مسير الرواتب"});}finally{db.release();}});
 app.get("/api/payroll/runs/:id/items",auth,enterpriseManager,async(req,res)=>{const r=await pool.query("select p.*,e.employee_number,e.full_name from payroll_items p join employees e on e.id=p.employee_id where p.run_id=$1 order by e.full_name",[req.params.id]);res.json({items:r.rows});});
 app.patch("/api/payroll/runs/:id/approve",auth,admin,async(req,res)=>{const r=await pool.query("update payroll_runs set status='approved',approved_by=$1,approved_at=now() where id=$2 and status='draft' returning *",[req.user.sub,req.params.id]);if(!r.rowCount)return res.status(409).json({error:"المسير غير موجود أو ليس مسودة"});await audit(req.user.sub,"payroll.run_approved","payroll_run",req.params.id);res.json({run:r.rows[0]});});
+app.post("/api/payroll/runs/:id/post",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({expense_account_id:z.string().uuid(),payable_account_id:z.string().uuid(),deductions_account_id:z.string().uuid()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"اختر حساب مصروف الرواتب والالتزامات"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const found=await db.query("select * from payroll_runs where id=$1 for update",[req.params.id]);
+  if(!found.rowCount||found.rows[0].status!=="approved"||found.rows[0].journal_entry_id){await db.query("rollback");return res.status(409).json({error:"اعتمد المسير أولاً أو أن القيد مرحّل مسبقاً"});}
+  const run=found.rows[0];
+  const accounts=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[[
+   p.data.expense_account_id,p.data.payable_account_id,p.data.deductions_account_id
+  ]]);
+  const types=new Map(accounts.rows.map(x=>[x.id,x.account_type]));
+  if(accounts.rowCount!==3||types.get(p.data.expense_account_id)!=="expense"||types.get(p.data.payable_account_id)!=="liability"||types.get(p.data.deductions_account_id)!=="liability"){
+   await db.query("rollback");return res.status(400).json({error:"نوع الحساب غير مناسب؛ يلزم مصروف للرواتب والتزامات للرواتب والاستقطاعات"});
+  }
+  if(Number(run.total_deductions)>0&&p.data.payable_account_id===p.data.deductions_account_id){await db.query("rollback");return res.status(400).json({error:"اختر حسابين مختلفين لصافي الرواتب والاستقطاعات"});}
+  const entry=await db.query("insert into journal_entries(entry_number,entry_date,description,created_by,source_type,source_id) values($1,current_date,$2,$3,'payroll_run',$4) returning id",
+   ["PAY-POST-"+run.id.replace(/-/g,"").slice(0,24),"ترحيل مسير الرواتب "+run.run_number,req.user.sub,run.id]);
+  await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[entry.rows[0].id,p.data.expense_account_id,"مصروف الرواتب "+run.run_number,run.total_gross]);
+  if(Number(run.total_net)>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[entry.rows[0].id,p.data.payable_account_id,"صافي الرواتب المستحق "+run.run_number,run.total_net]);
+  if(Number(run.total_deductions)>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[entry.rows[0].id,p.data.deductions_account_id,"استقطاعات الرواتب المستحقة "+run.run_number,run.total_deductions]);
+  await db.query("update journal_entries set status='posted',posted_by=$2,posted_at=now() where id=$1",[entry.rows[0].id,req.user.sub]);
+  const updated=await db.query("update payroll_runs set journal_entry_id=$1,payroll_payable_account_id=$2,payroll_deductions_account_id=$3 where id=$4 returning *",[entry.rows[0].id,p.data.payable_account_id,p.data.deductions_account_id,run.id]);
+  await db.query("commit");
+  await audit(req.user.sub,"payroll.run_posted","payroll_run",run.id,{journal_entry_id:entry.rows[0].id});
+  res.json({run:updated.rows[0],journal_entry_id:entry.rows[0].id});
+ }catch(e){await db.query("rollback");console.error("payroll posting failed",e.message);res.status(500).json({error:"تعذر ترحيل مسير الرواتب؛ لم يتم تغيير حالة المسير"});}
+ finally{db.release();}
+});
+app.post("/api/payroll/runs/:id/pay",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({payment_account_id:z.string().uuid()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"اختر الحساب البنكي أو النقدي للصرف"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const found=await db.query("select * from payroll_runs where id=$1 for update",[req.params.id]);
+  if(!found.rowCount||found.rows[0].status!=="approved"||!found.rows[0].journal_entry_id||found.rows[0].payment_journal_entry_id){await db.query("rollback");return res.status(409).json({error:"يجب ترحيل المسير أولاً، وألا يكون قد صُرف مسبقاً"});}
+  const run=found.rows[0];
+  const account=await db.query("select id,account_type from finance_accounts where id=$1 and is_active=true",[p.data.payment_account_id]);
+  if(!account.rowCount||account.rows[0].account_type!=="asset"){await db.query("rollback");return res.status(400).json({error:"حساب الصرف يجب أن يكون حساب أصول نشطاً"});}
+  if(Number(run.total_net)>0){
+   const entry=await db.query("insert into journal_entries(entry_number,entry_date,description,created_by,source_type,source_id) values($1,current_date,$2,$3,'payroll_payment',$4) returning id",
+    ["PAY-PAID-"+run.id.replace(/-/g,"").slice(0,23),"صرف صافي مسير الرواتب "+run.run_number,req.user.sub,run.id]);
+   await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[entry.rows[0].id,run.payroll_payable_account_id,"تسوية صافي الرواتب "+run.run_number,run.total_net]);
+   await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[entry.rows[0].id,p.data.payment_account_id,"صرف الرواتب "+run.run_number,run.total_net]);
+   await db.query("update journal_entries set status='posted',posted_by=$2,posted_at=now() where id=$1",[entry.rows[0].id,req.user.sub]);
+   const updated=await db.query("update payroll_runs set status='paid',payment_journal_entry_id=$1,paid_by=$2,paid_at=now() where id=$3 returning *",[entry.rows[0].id,req.user.sub,run.id]);
+   await db.query("commit");await audit(req.user.sub,"payroll.run_paid","payroll_run",run.id,{payment_journal_entry_id:entry.rows[0].id});
+   return res.json({run:updated.rows[0],payment_journal_entry_id:entry.rows[0].id});
+  }
+  const updated=await db.query("update payroll_runs set status='paid',paid_by=$1,paid_at=now() where id=$2 returning *",[req.user.sub,run.id]);
+  await db.query("commit");await audit(req.user.sub,"payroll.run_paid","payroll_run",run.id,{payment_journal_entry_id:null});
+  res.json({run:updated.rows[0],payment_journal_entry_id:null});
+ }catch(e){await db.query("rollback");console.error("payroll payment failed",e.message);res.status(500).json({error:"تعذر تسجيل صرف مسير الرواتب"});}
+ finally{db.release();}
+});
+
 // Fixed assets and maintenance
 app.get("/api/assets",auth,async(_req,res)=>{const r=await pool.query("select a.*,e.full_name as assigned_employee from fixed_assets a left join employees e on e.id=a.assigned_employee_id order by a.created_at desc limit 500");res.json({assets:r.rows});});
 app.post("/api/assets",auth,enterpriseManager,async(req,res)=>{const p=z.object({asset_name:z.string().trim().min(2).max(180),category:z.string().trim().min(2).max(100),serial_number:z.string().max(120).optional(),purchase_date:z.string().date().optional(),purchase_cost:z.coerce.number().min(0),useful_life_months:z.coerce.number().int().min(1).max(1200),salvage_value:z.coerce.number().min(0),location:z.string().max(180).optional(),assigned_employee_id:z.string().uuid().optional(),notes:z.string().max(3000).optional()}).refine(v=>v.salvage_value<=v.purchase_cost).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من بيانات الأصل وقيمته"});try{const r=await pool.query("insert into fixed_assets(asset_number,asset_name,category,serial_number,purchase_date,purchase_cost,useful_life_months,salvage_value,location,assigned_employee_id,notes,created_by) values('AST-'||lpad(nextval('asset_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) returning *",[p.data.asset_name,p.data.category,p.data.serial_number||null,p.data.purchase_date||null,p.data.purchase_cost,p.data.useful_life_months,p.data.salvage_value,p.data.location||null,p.data.assigned_employee_id||null,p.data.notes||null,req.user.sub]);await audit(req.user.sub,"asset.created","fixed_asset",r.rows[0].id);res.status(201).json({asset:r.rows[0]});}catch(e){res.status(500).json({error:"تعذر تسجيل الأصل"});}});
