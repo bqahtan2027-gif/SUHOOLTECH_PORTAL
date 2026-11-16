@@ -101,6 +101,8 @@ jobs:
           cp server/package.json release/api/package.json
           (cd release/api && npm install --omit=dev)
           cp database/init/*.sql release/database/init/
+          mkdir -p release/scripts
+          cp scripts/apply-migrations.ps1 scripts/backup-postgres.ps1 scripts/restore-postgres.ps1 release/scripts/
           cp hosting/mywindowshosting-w500/README.md release/hosting/README.md
           cp README.md release/README.md
           printf 'Commit: %s\nBuilt: %s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > release/BUILD-INFO.txt
