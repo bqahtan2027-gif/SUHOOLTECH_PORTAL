@@ -35,11 +35,29 @@ function Brand() {
 
 export default function App() {
   const [activeNav, setActiveNav] = useState("overview");
+  const [token, setToken] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<{full_name:string;email:string;role:string} | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+  const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); setLoginBusy(true); setLoginError("");
+    try {
+      const response = await fetch("/api/auth/login", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email:loginEmail,password:loginPassword}) });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "تعذر تسجيل الدخول");
+      setToken(data.token); setCurrentUser(data.user); setLoginPassword("");
+    } catch (error) { setLoginError(error instanceof Error ? error.message : "تعذر الاتصال بالخادم"); }
+    finally { setLoginBusy(false); }
+  };
   const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
   const [language, setLanguage] = useState<"ar" | "en">("ar");
   const filtered = useMemo(() => modules.filter((m) => m.title.includes(query.trim())), [query]);
   const isArabic = language === "ar";
+
+  if (!token) return <div className="auth-screen" dir="rtl"><div className="auth-card"><Brand/><div className="auth-eyebrow">بوابة سهول تيك الآمنة</div><h1>مرحباً بعودتك</h1><p>سجّل الدخول للوصول إلى مساحة عمل الشركة.</p><form onSubmit={signIn}><label>البريد الإلكتروني<input type="email" autoComplete="username" required value={loginEmail} onChange={e=>setLoginEmail(e.target.value)} placeholder="name@company.com"/></label><label>كلمة المرور<input type="password" autoComplete="current-password" required value={loginPassword} onChange={e=>setLoginPassword(e.target.value)} placeholder="أدخل كلمة المرور"/></label>{loginError && <div className="auth-error">{loginError}</div>}<button className="auth-submit" disabled={loginBusy}>{loginBusy ? "جارٍ تسجيل الدخول..." : "تسجيل الدخول"}</button></form><small>تُدار بيانات الدخول على خادم الشركة الخاص.</small></div></div>;
 
   return <div className={`app-shell ${isArabic ? "rtl" : "ltr"}`} dir={isArabic ? "rtl" : "ltr"}>
     {mobileOpen && <button className="mobile-scrim" aria-label="إغلاق القائمة" onClick={() => setMobileOpen(false)} />}
@@ -69,7 +87,7 @@ export default function App() {
           <label className="search-box"><Search size={17}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder={isArabic ? "ابحث عن نظام..." : "Search systems..."}/><kbd>⌘ K</kbd></label>
           <button className="language-button" onClick={() => setLanguage(isArabic ? "en" : "ar")}><Globe2 size={17}/>{isArabic ? "EN" : "عربي"}</button>
           <button className="icon-button notification-button" aria-label="الإشعارات"><Bell size={19}/><i/></button>
-          <div className="user-avatar">م</div>
+          <button className="user-chip" onClick={() => {setToken(null);setCurrentUser(null);setActiveNav("overview");}} title="تسجيل الخروج"><span className="user-avatar">{currentUser?.full_name?.slice(0,1) || "م"}</span><span className="user-name">{currentUser?.full_name || "المستخدم"}<small>تسجيل الخروج</small></span></button>
         </div>
       </header>
 
