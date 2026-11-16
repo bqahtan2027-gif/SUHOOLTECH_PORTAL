@@ -68,7 +68,7 @@ export default function App() {
   const [summary, setSummary] = useState<{projects:{total:number;active:number;completed:number};tasks:{total:number;completed:number;open:number;overdue:number};users:{total:number;active:number}} | null>(null);
   const [users, setUsers] = useState<Array<{id:string;full_name:string;email:string;role:string;active:boolean;last_login_at?:string}>>([]);
   const [auditLogs, setAuditLogs] = useState<Array<{id:number;action:string;entity_type:string;entity_id?:string;actor_name?:string;created_at:string}>>([]);
-  const [quotes, setQuotes] = useState<Array<{id:string;quote_number:string;client_name:string;status:string;subtotal:string;tax_amount:string;total:string;valid_until?:string;items:Array<{description:string}>}>>([]);
+  const [quotes, setQuotes] = useState<Array<{id:string;quote_number:string;client_name:string;client_email?:string;client_phone?:string;status:string;subtotal:string;discount_amount?:string;tax_rate?:string;tax_amount:string;total:string;valid_until?:string;notes?:string;created_at?:string;items:Array<{description:string;quantity?:string|number;unit_price?:string|number;line_total?:string|number}>}>>([]);
   const [quoteForm, setQuoteForm] = useState({client_name:"",client_email:"",description:"",quantity:"1",unit_price:"",discount_amount:"",valid_until:"",notes:""});
   const [quoteError, setQuoteError] = useState("");
   const [quoteBusy, setQuoteBusy] = useState(false);
