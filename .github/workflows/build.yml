@@ -11,18 +11,18 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_DB: suhoooltech_test
-          POSTGRES_USER: suhoooltech_test
+          POSTGRES_DB: suhooltech_test
+          POSTGRES_USER: suhooltech_test
           POSTGRES_PASSWORD: test_only_password
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U suhoooltech_test -d suhoooltech_test"
+          --health-cmd "pg_isready -U suhooltech_test -d suhooltech_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://suhoooltech_test:test_only_password@localhost:5432/suhoooltech_test
+      DATABASE_URL: postgres://suhooltech_test:test_only_password@localhost:5432/suhooltech_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
