@@ -20,7 +20,7 @@ type Module = {
 const modules: Module[] = [
   { id: "projects", title: "المهام والمشاريع", description: "تابع المشاريع والمهام وسير العمل من مكان واحد.", icon: FolderKanban, color: "blue", bg: "blue-bg", status: "active", label: "متاح" },
   { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "active", label: "متاح" },
-  { id: "hr", title: "الموارد البشرية", description: "ملفات الموظفين والإجازات والحضور.", icon: Users, color: "green", bg: "green-bg", status: "planned", label: "قريباً" },
+  { id: "hr", title: "الموارد البشرية", description: "ملفات الموظفين والإجازات والحضور.", icon: Users, color: "green", bg: "green-bg", status: "active", label: "متاح" },
   { id: "documents", title: "المسودات والمستندات", description: "إنشاء المستندات ومراجعتها واعتمادها وأرشفتها.", icon: FileCheck2, color: "purple", bg: "purple-bg", status: "planned", label: "قريباً" },
   { id: "admin", title: "الخدمات الإدارية", description: "الطلبات الداخلية والموافقات والعهد والمشتريات.", icon: Building2, color: "orange", bg: "orange-bg", status: "planned", label: "قريباً" },
   { id: "vault", title: "خزنة كلمات المرور", description: "إدارة أسرار الشركة والخزن الشخصية بصلاحيات دقيقة.", icon: KeyRound, color: "navy", bg: "navy-bg", status: "planned", label: "مرحلة لاحقة" },
@@ -53,6 +53,12 @@ export default function App() {
   const [quoteForm, setQuoteForm] = useState({client_name:"",client_email:"",description:"",quantity:"1",unit_price:"",discount_amount:"",valid_until:"",notes:""});
   const [quoteError, setQuoteError] = useState("");
   const [quoteBusy, setQuoteBusy] = useState(false);
+  const [employees,setEmployees]=useState<Array<{id:string;employee_number:string;full_name:string;email?:string;department?:string;job_title?:string;status:string}>>([]);
+  const [leaves,setLeaves]=useState<Array<{id:string;leave_type:string;start_date:string;end_date:string;reason?:string;status:string;requester_name?:string}>>([]);
+  const [hrError,setHrError]=useState("");
+  const [hrBusy,setHrBusy]=useState(false);
+  const [employeeForm,setEmployeeForm]=useState({full_name:"",email:"",phone:"",department:"",job_title:"",hire_date:""});
+  const [leaveForm,setLeaveForm]=useState({leave_type:"annual",start_date:"",end_date:"",reason:""});
   const [newUser, setNewUser] = useState({name:"",email:"",password:"",role:"employee"});
   const [userError, setUserError] = useState("");
   const [userBusy, setUserBusy] = useState(false);
@@ -75,6 +81,13 @@ export default function App() {
     if (activeNav !== "quotes" || !token) return;
     fetch("/api/quotes", {headers:{Authorization:`Bearer ${token}`}}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل عروض الأسعار");setQuotes(d.quotes||[]);}).catch(e=>setQuoteError(e instanceof Error?e.message:"تعذر تحميل عروض الأسعار"));
   }, [activeNav, token]);
+  useEffect(() => {
+    if(activeNav!=="hr"||!token)return;
+    setHrError("");
+    const headers={Authorization:"Bearer "+token};
+    fetch("/api/hr/leaves",{headers}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل الإجازات");setLeaves(d.leaves||[]);}).catch(e=>setHrError(e instanceof Error?e.message:"تعذر تحميل الإجازات"));
+    if(currentUser?.role==="admin"||currentUser?.role==="manager") fetch("/api/hr/employees",{headers}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل الموظفين");setEmployees(d.employees||[]);}).catch(e=>setHrError(e instanceof Error?e.message:"تعذر تحميل الموظفين"));
+  },[activeNav,token,currentUser]);
   useEffect(() => {
     if (activeNav !== "projects" || !token) return;
     fetch("/api/projects", { headers: { Authorization: `Bearer ${token}` } })
