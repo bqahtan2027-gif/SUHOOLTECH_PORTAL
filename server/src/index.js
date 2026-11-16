@@ -810,6 +810,89 @@ app.post("/api/finance/journals/:id/post",auth,financeManager,async(req,res)=>{
 });
 
 
+// Sales invoices: draft creation, stock issue and balanced GL posting.
+app.get("/api/finance/sales-invoices",auth,async(_req,res)=>{
+ try{const r=await pool.query(`select i.*,p.name as party_name,j.entry_number,s.document_number as stock_document_number,
+  coalesce((select sum(a.amount) from sales_receipt_allocations a where a.invoice_id=i.id),0)::numeric(16,2) as paid_amount
+  from sales_invoices i left join finance_parties p on p.id=i.party_id
+  left join journal_entries j on j.id=i.journal_entry_id left join stock_documents s on s.id=i.stock_document_id
+  order by i.issue_date desc,i.created_at desc limit 300`);res.json({invoices:r.rows});}
+ catch(e){console.error("sales invoice list failed",e.message);res.status(503).json({error:"تعذر تحميل فواتير المبيعات"});}
+});
+app.post("/api/finance/sales-invoices",auth,financeManager,async(req,res)=>{
+ const p=z.object({party_id:z.string().uuid(),issue_date:z.string().date(),due_date:z.string().date().optional(),warehouse_id:z.string().uuid().optional(),discount_amount:z.coerce.number().min(0).max(999999999).default(0),lines:z.array(z.object({item_id:z.string().uuid().optional(),description:z.string().trim().min(2).max(500),quantity:z.coerce.number().positive().max(1000000),unit_price:z.coerce.number().min(0).max(999999999),tax_rate:z.coerce.number().min(0).max(100).default(15)})).min(1).max(100)}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من العميل وتاريخ الفاتورة وبنودها"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const party=await db.query("select * from finance_parties where id=$1 and party_type in ('customer','both')",[p.data.party_id]);
+  if(!party.rowCount)throw new Error("CUSTOMER_INVALID");
+  if(p.data.warehouse_id){const wh=await db.query("select id from warehouses where id=$1 and is_active=true",[p.data.warehouse_id]);if(!wh.rowCount)throw new Error("WAREHOUSE_INVALID");}
+  const lines=p.data.lines.map(l=>{const sub=Math.round(l.quantity*l.unit_price*100)/100;const tax=Math.round(sub*l.tax_rate)/100;return {...l,sub,tax,total:sub+tax};});
+  const subtotal=Math.round(lines.reduce((s,l)=>s+l.sub,0)*100)/100;
+  if(p.data.discount_amount>subtotal)throw new Error("DISCOUNT_INVALID");
+  const discount=Math.round(p.data.discount_amount*100)/100;
+  const taxable=subtotal-discount;
+  const taxAmount=Math.round(lines.reduce((s,l)=>s+l.tax,0)*100)/100;
+  const total=Math.round((taxable+taxAmount)*100)/100;
+  const n=await db.query("select nextval('sales_invoice_number_seq') n");
+  const number="INV-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
+  const inv=await db.query(`insert into sales_invoices(invoice_number,party_id,customer_name,customer_tax_number,issue_date,due_date,warehouse_id,status,subtotal,discount_amount,tax_rate,tax_amount,total,created_by)
+   values($1,$2,$3,$4,$5,$6,$7,'draft',$8,$9,15,$10,$11,$12) returning *`,
+   [number,p.data.party_id,party.rows[0].name,party.rows[0].tax_number,p.data.issue_date,p.data.due_date||null,p.data.warehouse_id||null,subtotal,discount,taxAmount,total,req.user.sub]);
+  for(const l of lines)await db.query("insert into sales_invoice_lines(invoice_id,item_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total) values($1,$2,$3,$4,$5,$6,$7,$8,$9)",[inv.rows[0].id,l.item_id||null,l.description,l.quantity,l.unit_price,l.tax_rate,l.sub,l.tax,l.total]);
+  await db.query("commit");await audit(req.user.sub,"finance.sales_invoice_created","sales_invoice",inv.rows[0].id,{invoice_number:number,total});
+  res.status(201).json({invoice:inv.rows[0]});
+ }catch(e){await db.query("rollback");const messages={CUSTOMER_INVALID:"العميل غير موجود أو ليس عميلاً",WAREHOUSE_INVALID:"المستودع غير موجود أو غير نشط",DISCOUNT_INVALID:"الخصم يتجاوز قيمة الفاتورة"};const msg=messages[e.message];if(!msg)console.error("sales invoice create failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر إنشاء فاتورة المبيعات"});}
+ finally{db.release();}
+});
+app.post("/api/finance/sales-invoices/:id/post",auth,financeManager,async(req,res)=>{
+ const p=z.object({receivable_account_id:z.string().uuid(),revenue_account_id:z.string().uuid(),output_tax_account_id:z.string().uuid()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"حدد حساب العملاء والإيرادات وضريبة المخرجات"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const ir=await db.query("select * from sales_invoices where id=$1 for update",[req.params.id]);
+  if(!ir.rowCount||ir.rows[0].status!=="draft")throw new Error("INVOICE_NOT_DRAFT");
+  const inv=ir.rows[0];
+  const ids=[p.data.receivable_account_id,p.data.revenue_account_id,p.data.output_tax_account_id];
+  if(new Set(ids).size!==3)throw new Error("ACCOUNTS_DIFFER");
+  const ar=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[ids]);
+  const types=new Map(ar.rows.map(x=>[x.id,x.account_type]));
+  if(ar.rowCount!==3||types.get(p.data.receivable_account_id)!=="asset"||types.get(p.data.revenue_account_id)!=="revenue"||types.get(p.data.output_tax_account_id)!=="liability")throw new Error("ACCOUNT_TYPES");
+  const lines=await db.query("select * from sales_invoice_lines where invoice_id=$1 order by id",[inv.id]);
+  const stockLines=lines.rows.filter(l=>l.item_id);
+  let stockDoc=null;
+  if(stockLines.length){
+   if(!inv.warehouse_id)throw new Error("WAREHOUSE_REQUIRED");
+   for(const l of stockLines){
+    const b=await db.query("select quantity from stock_balances where warehouse_id=$1 and item_id=$2 for update",[inv.warehouse_id,l.item_id]);
+    if(!b.rowCount||Number(b.rows[0].quantity)<Number(l.quantity))throw new Error("INSUFFICIENT_STOCK");
+   }
+   const sd=await db.query(`insert into stock_documents(document_number,document_type,status,source_warehouse_id,reference_number,notes,created_by,posted_by,posted_at)
+    values('SINV-'||lpad(nextval('sales_stock_issue_number_seq')::text,8,'0'),'issue','posted',$1,$2,'صرف مبيعات',$3,$3,now()) returning id,document_number`,[inv.warehouse_id,inv.invoice_number,req.user.sub]);
+   stockDoc=sd.rows[0];
+   for(const l of stockLines){
+    await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,(select cost_price from inventory_items where id=$2))",[stockDoc.id,l.item_id,l.quantity]);
+    const dec=await db.query("update stock_balances set quantity=quantity-$1,updated_at=now() where warehouse_id=$2 and item_id=$3 and quantity >= $1 returning quantity",[l.quantity,inv.warehouse_id,l.item_id]);
+    if(!dec.rowCount)throw new Error("INSUFFICIENT_STOCK");
+   }
+  }
+  const j=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
+   values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),$1,$2,'posted','sales_invoice',$3,$4,$4,now()) returning id,entry_number`,
+   [inv.issue_date,"فاتورة مبيعات "+inv.invoice_number,inv.id,req.user.sub]);
+  if(Number(inv.total)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[j.rows[0].id,p.data.receivable_account_id,inv.party_id,"ذمم العميل "+inv.invoice_number,inv.total]);
+  const revenue=Number(inv.subtotal)-Number(inv.discount_amount);
+  if(revenue>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[j.rows[0].id,p.data.revenue_account_id,"إيرادات المبيعات "+inv.invoice_number,revenue]);
+  if(Number(inv.tax_amount)>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[j.rows[0].id,p.data.output_tax_account_id,"ضريبة مخرجات "+inv.invoice_number,inv.tax_amount]);
+  await db.query("update sales_invoices set status='issued',journal_entry_id=$1,receivable_account_id=$2,revenue_account_id=$3,output_tax_account_id=$4,stock_document_id=$5,posted_by=$6,posted_at=now() where id=$7",[j.rows[0].id,p.data.receivable_account_id,p.data.revenue_account_id,p.data.output_tax_account_id,stockDoc?.id||null,req.user.sub,inv.id]);
+  await db.query("commit");await audit(req.user.sub,"finance.sales_invoice_posted","sales_invoice",inv.id,{journal_entry_id:j.rows[0].id,stock_document_id:stockDoc?.id||null,total:inv.total});
+  res.json({status:"issued",journal:j.rows[0],stock_document:stockDoc});
+ }catch(e){await db.query("rollback");const messages={INVOICE_NOT_DRAFT:"الفاتورة غير موجودة أو سبق ترحيلها",ACCOUNTS_DIFFER:"يجب اختيار ثلاثة حسابات مختلفة",ACCOUNT_TYPES:"تحقق من أنواع حسابات العملاء والإيرادات والضريبة",WAREHOUSE_REQUIRED:"حدد مستودعاً قبل إصدار فاتورة تحتوي أصنافاً مخزنية",INSUFFICIENT_STOCK:"الرصيد المخزني غير كافٍ لإصدار الفاتورة"};const msg=messages[e.message];if(!msg)console.error("sales invoice post failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر إصدار فاتورة المبيعات"});}
+ finally{db.release();}
+});
+
+
 const enterpriseManager=(req,res,next)=>["admin","manager"].includes(req.user.role)?next():res.status(403).json({error:"هذه العملية متاحة للمدير ومدير النظام"});
 app.get("/api/crm/leads",auth,async(_req,res)=>{try{const r=await pool.query("select * from crm_leads order by created_at desc limit 300");res.json({leads:r.rows});}catch(e){res.status(503).json({error:"تعذر تحميل العملاء المحتملين"});}});
 app.post("/api/crm/leads",auth,async(req,res)=>{const p=z.object({company_name:z.string().trim().min(2).max(180),contact_name:z.string().max(160).optional(),email:z.string().email().max(254).optional().or(z.literal("")),phone:z.string().max(40).optional(),source:z.string().max(60).optional(),estimated_value:z.coerce.number().min(0).max(999999999).default(0),notes:z.string().max(4000).optional()}).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من بيانات العميل المحتمل"});try{const r=await pool.query("insert into crm_leads(lead_number,company_name,contact_name,email,phone,source,estimated_value,notes,created_by) values('LEAD-'||lpad(nextval('crm_lead_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6,$7,$8) returning *",[p.data.company_name,p.data.contact_name||null,p.data.email||null,p.data.phone||null,p.data.source||null,p.data.estimated_value,p.data.notes||null,req.user.sub]);await audit(req.user.sub,"crm.lead_created","crm_lead",r.rows[0].id);res.status(201).json({lead:r.rows[0]});}catch(e){res.status(500).json({error:"تعذر حفظ العميل المحتمل"});}});
