@@ -785,7 +785,7 @@ app.post("/api/inventory/documents",auth,inventoryManager,async(req,res)=>{
   const doc=await client.query("insert into stock_documents(document_number,document_type,status,source_warehouse_id,destination_warehouse_id,notes,created_by,posted_by,posted_at) values($1,$2,'posted',$3,$4,$5,$6,$6,now()) returning id,document_number,status,document_type",[number,p.data.document_type,p.data.document_type==="issue"?p.data.warehouse_id:null,p.data.document_type==="receipt"?p.data.warehouse_id:null,p.data.notes||null,req.user.sub]);
   await client.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[doc.rows[0].id,p.data.item_id,p.data.quantity,p.data.unit_cost]);
   const delta=p.data.document_type==="receipt"?p.data.quantity:-p.data.quantity;
-  await client.query("insert into stock_balances(warehouse_id,item_id,quantity) values($1,$2,$3) on conflict(warehouse_id,item_id) do update set quantity=stock_balances.quantity+excluded.quantity,updated_at=now()",[p.data.warehouse_id,p.data.item_id,delta]);
+  await client.query("insert into stock_balances(warehouse_id,item_id,quantity) values($1,$2,greatest($3,0)) on conflict(warehouse_id,item_id) do update set quantity=stock_balances.quantity+$3,updated_at=now()",[p.data.warehouse_id,p.data.item_id,delta]);
   await client.query("commit");
   await audit(req.user.sub,"inventory.stock_"+p.data.document_type,"stock_document",doc.rows[0].id,{quantity:p.data.quantity,sku:p.data.item_id});
   res.status(201).json({document:doc.rows[0]});
