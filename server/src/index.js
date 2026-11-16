@@ -855,7 +855,7 @@ app.post("/api/finance/sales-invoices",auth,financeManager,async(req,res)=>{
  finally{db.release();}
 });
 app.post("/api/finance/sales-invoices/:id/post",auth,financeManager,async(req,res)=>{
- const p=z.object({receivable_account_id:z.string().uuid(),revenue_account_id:z.string().uuid(),output_tax_account_id:z.string().uuid()}).safeParse(req.body);
+ const p=z.object({receivable_account_id:z.string().uuid(),revenue_account_id:z.string().uuid(),output_tax_account_id:z.string().uuid(),cogs_account_id:z.string().uuid().optional(),inventory_account_id:z.string().uuid().optional()}).safeParse(req.body);
  if(!p.success)return res.status(400).json({error:"حدد حساب العملاء والإيرادات وضريبة المخرجات"});
  const db=await pool.connect();
  try{
@@ -870,7 +870,13 @@ app.post("/api/finance/sales-invoices/:id/post",auth,financeManager,async(req,re
   if(ar.rowCount!==3||types.get(p.data.receivable_account_id)!=="asset"||types.get(p.data.revenue_account_id)!=="revenue"||types.get(p.data.output_tax_account_id)!=="liability")throw new Error("ACCOUNT_TYPES");
   const lines=await db.query("select * from sales_invoice_lines where invoice_id=$1 order by id",[inv.id]);
   const stockLines=lines.rows.filter(l=>l.item_id);
-  let stockDoc=null;
+  let stockDoc=null,costOfGoods=0;
+  if(stockLines.length){
+   if(!p.data.cogs_account_id||!p.data.inventory_account_id||p.data.cogs_account_id===p.data.inventory_account_id)throw new Error("COST_ACCOUNTS_REQUIRED");
+   const ca=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[[p.data.cogs_account_id,p.data.inventory_account_id]]);
+   const ct=new Map(ca.rows.map(x=>[x.id,x.account_type]));
+   if(ca.rowCount!==2||ct.get(p.data.cogs_account_id)!=="expense"||ct.get(p.data.inventory_account_id)!=="asset")throw new Error("COST_ACCOUNT_TYPES");
+  }
   if(stockLines.length){
    if(!inv.warehouse_id)throw new Error("WAREHOUSE_REQUIRED");
    for(const l of stockLines){
@@ -881,7 +887,12 @@ app.post("/api/finance/sales-invoices/:id/post",auth,financeManager,async(req,re
     values('SINV-'||lpad(nextval('sales_stock_issue_number_seq')::text,8,'0'),'issue','posted',$1,$2,'صرف مبيعات',$3,$3,now()) returning id,document_number`,[inv.warehouse_id,inv.invoice_number,req.user.sub]);
    stockDoc=sd.rows[0];
    for(const l of stockLines){
-    await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,(select cost_price from inventory_items where id=$2))",[stockDoc.id,l.item_id,l.quantity]);
+    const c=await db.query("select cost_price from inventory_items where id=$1 for share",[l.item_id]);
+    if(!c.rowCount)throw new Error("INVENTORY_ITEM_MISSING");
+    const unitCost=Number(c.rows[0].cost_price),lineCost=Math.round(unitCost*Number(l.quantity)*100)/100;
+    costOfGoods=Math.round((costOfGoods+lineCost)*100)/100;
+    await db.query("update sales_invoice_lines set cost_unit=$1,cost_total=$2 where id=$3",[unitCost,lineCost,l.id]);
+    await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[stockDoc.id,l.item_id,l.quantity,unitCost]);
     const dec=await db.query("update stock_balances set quantity=quantity-$1,updated_at=now() where warehouse_id=$2 and item_id=$3 and quantity >= $1 returning quantity",[l.quantity,inv.warehouse_id,l.item_id]);
     if(!dec.rowCount)throw new Error("INSUFFICIENT_STOCK");
    }
@@ -893,7 +904,11 @@ app.post("/api/finance/sales-invoices/:id/post",auth,financeManager,async(req,re
   const revenue=Number(inv.subtotal)-Number(inv.discount_amount);
   if(revenue>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[j.rows[0].id,p.data.revenue_account_id,"إيرادات المبيعات "+inv.invoice_number,revenue]);
   if(Number(inv.tax_amount)>0)await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[j.rows[0].id,p.data.output_tax_account_id,"ضريبة مخرجات "+inv.invoice_number,inv.tax_amount]);
-  await db.query("update sales_invoices set status='issued',journal_entry_id=$1,receivable_account_id=$2,revenue_account_id=$3,output_tax_account_id=$4,stock_document_id=$5,posted_by=$6,posted_at=now() where id=$7",[j.rows[0].id,p.data.receivable_account_id,p.data.revenue_account_id,p.data.output_tax_account_id,stockDoc?.id||null,req.user.sub,inv.id]);
+  if(costOfGoods>0){
+   await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[j.rows[0].id,p.data.cogs_account_id,"تكلفة البضاعة المباعة "+inv.invoice_number,costOfGoods]);
+   await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[j.rows[0].id,p.data.inventory_account_id,"تخفيض المخزون "+inv.invoice_number,costOfGoods]);
+  }
+  await db.query("update sales_invoices set status='issued',journal_entry_id=$1,receivable_account_id=$2,revenue_account_id=$3,output_tax_account_id=$4,stock_document_id=$5,posted_by=$6,posted_at=now(),cogs_account_id=$7,inventory_account_id=$8 where id=$9",[j.rows[0].id,p.data.receivable_account_id,p.data.revenue_account_id,p.data.output_tax_account_id,stockDoc?.id||null,req.user.sub,stockLines.length?p.data.cogs_account_id:null,stockLines.length?p.data.inventory_account_id:null,inv.id]);
   await db.query("commit");await audit(req.user.sub,"finance.sales_invoice_posted","sales_invoice",inv.id,{journal_entry_id:j.rows[0].id,stock_document_id:stockDoc?.id||null,total:inv.total});
   res.json({status:"issued",journal:j.rows[0],stock_document:stockDoc});
  }catch(e){await db.query("rollback");const messages={INVOICE_NOT_DRAFT:"الفاتورة غير موجودة أو سبق ترحيلها",ACCOUNTS_DIFFER:"يجب اختيار ثلاثة حسابات مختلفة",ACCOUNT_TYPES:"تحقق من أنواع حسابات العملاء والإيرادات والضريبة",WAREHOUSE_REQUIRED:"حدد مستودعاً قبل إصدار فاتورة تحتوي أصنافاً مخزنية",INSUFFICIENT_STOCK:"الرصيد المخزني غير كافٍ لإصدار الفاتورة"};const msg=messages[e.message];if(!msg)console.error("sales invoice post failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر إصدار فاتورة المبيعات"});}
