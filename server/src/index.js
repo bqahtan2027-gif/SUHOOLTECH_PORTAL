@@ -1019,6 +1019,10 @@ app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(re
   const ir=await db.query("select * from sales_invoices where id=$1 for update",[note.original_invoice_id]);
   if(!ir.rowCount||!["issued","partially_paid","paid"].includes(ir.rows[0].status))throw new Error("ORIGINAL_INVOICE_INVALID");
   const inv=ir.rows[0],lines=await db.query("select * from sales_credit_note_lines where credit_note_id=$1",[note.id]);
+  const stockLines=lines.rows.filter(l=>l.item_id);
+  if(stockLines.length&&(!inv.cogs_account_id||!inv.inventory_account_id))throw new Error("ORIGINAL_COST_ACCOUNTS_MISSING");
+  if(stockLines.some(line=>line.cost_total===null||line.cost_total===undefined))throw new Error("RETURN_COST_UNAVAILABLE");
+  let returnedCost=0;
   for(const line of lines.rows){
    const returned=await db.query(`select coalesce(sum(cl.quantity),0)::numeric(14,3) quantity
     from sales_credit_note_lines cl join sales_credit_notes cn on cn.id=cl.credit_note_id
@@ -1026,7 +1030,6 @@ app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(re
    const original=await db.query("select quantity from sales_invoice_lines where id=$1",[line.original_invoice_line_id]);
    if(!original.rowCount||Number(returned.rows[0].quantity)+Number(line.quantity)>Number(original.rows[0].quantity)+0.0005)throw new Error("RETURN_QUANTITY_EXCEEDED");
   }
-  const stockLines=lines.rows.filter(l=>l.item_id);
   let stockDoc=null;
   if(stockLines.length){
    if(!inv.warehouse_id)throw new Error("RETURN_WAREHOUSE_REQUIRED");
@@ -1037,8 +1040,9 @@ app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(re
     [inv.warehouse_id,note.credit_note_number,req.user.sub]);
    stockDoc=sd.rows[0];
    for(const line of stockLines){
-    const cost=await db.query("select cost_price from inventory_items where id=$1",[line.item_id]);
-    await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[stockDoc.id,line.item_id,line.quantity,cost.rows[0]?.cost_price||0]);
+    const costUnit=Number(line.cost_total)/Number(line.quantity);
+    returnedCost=Math.round((returnedCost+Number(line.cost_total))*100)/100;
+    await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[stockDoc.id,line.item_id,line.quantity,costUnit]);
     await db.query(`insert into stock_balances(warehouse_id,item_id,quantity) values($1,$2,$3)
      on conflict(warehouse_id,item_id) do update set quantity=stock_balances.quantity+excluded.quantity,updated_at=now()`,[inv.warehouse_id,line.item_id,line.quantity]);
    }
@@ -1050,10 +1054,14 @@ app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(re
   if(Number(note.subtotal)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,inv.revenue_account_id,inv.party_id,"عكس إيراد مرتجع "+note.credit_note_number,note.subtotal]);
   if(Number(note.tax_amount)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,inv.output_tax_account_id,inv.party_id,"عكس ضريبة مرتجع "+note.credit_note_number,note.tax_amount]);
   await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,inv.receivable_account_id,inv.party_id,"تخفيض ذمم العميل "+note.credit_note_number,note.total]);
+  if(returnedCost>0){
+   await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[je.rows[0].id,inv.inventory_account_id,"إعادة تكلفة المخزون "+note.credit_note_number,returnedCost]);
+   await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[je.rows[0].id,inv.cogs_account_id,"عكس تكلفة البضاعة المباعة "+note.credit_note_number,returnedCost]);
+  }
   await db.query("update sales_credit_notes set status='issued',journal_entry_id=$1,stock_document_id=$2,posted_by=$3,posted_at=now() where id=$4",[je.rows[0].id,stockDoc?.id||null,req.user.sub,note.id]);
   await db.query("commit");await audit(req.user.sub,"finance.sales_credit_note_posted","sales_credit_note",note.id,{journal_entry_id:je.rows[0].id,stock_document_id:stockDoc?.id||null,total:note.total});
   res.json({status:"issued",journal:je.rows[0],stock_document:stockDoc});
- }catch(e){await db.query("rollback");const messages={CREDIT_NOTE_NOT_DRAFT:"الإشعار الدائن غير موجود أو سبق ترحيله",ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير صالحة",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المتاحة للإرجاع",RETURN_WAREHOUSE_REQUIRED:"مستودع الفاتورة الأصلية غير متاح لاستلام المرتجع",ORIGINAL_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات محاسبية مكتملة"};const msg=messages[e.message];if(!msg)console.error("sales credit note posting failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر ترحيل الإشعار الدائن"});}
+ }catch(e){await db.query("rollback");const messages={CREDIT_NOTE_NOT_DRAFT:"الإشعار الدائن غير موجود أو سبق ترحيله",ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير صالحة",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المتاحة للإرجاع",RETURN_WAREHOUSE_REQUIRED:"مستودع الفاتورة الأصلية غير متاح لاستلام المرتجع",ORIGINAL_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات محاسبية مكتملة",ORIGINAL_COST_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات المخزون والتكلفة",RETURN_COST_UNAVAILABLE:"تعذر ترحيل المرتجع لأن تكلفة الصنف التاريخية غير محفوظة في الفاتورة الأصلية"};const msg=messages[e.message];if(!msg)console.error("sales credit note posting failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر ترحيل الإشعار الدائن"});}
  finally{db.release();}
 });
 
