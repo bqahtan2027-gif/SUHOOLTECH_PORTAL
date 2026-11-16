@@ -46,8 +46,9 @@ Run these SQL files in order against the newly created PostgreSQL database using
 2. `database/init/002_projects_dashboard.sql`
 3. `database/init/003_quotes.sql`
 4. `database/init/004_hr.sql`
+5. `database/init/005_documents.sql`
 
-The second migration adds projects and dashboard indexes. The third adds quotes and quote items. The fourth adds the employee directory and leave requests. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
+The second migration adds projects and dashboard indexes. The third adds quotes and quote items. The fourth adds the employee directory and leave requests. The fifth adds the documents/contracts register and approval workflow. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
 
 ## Frontend build and IIS
 
@@ -69,7 +70,7 @@ Do not assume IIS URL Rewrite can proxy to the Node app or that a custom port is
 1. Verify `https://YOUR-API-HOST/api/health` returns status `ok` and database `connected`.
 2. Call `POST /api/auth/bootstrap` once with `token`, `name`, `email`, and a unique password of at least 12 characters.
 3. Immediately remove `BOOTSTRAP_TOKEN` from the app settings and restart the API.
-4. Test login, `/api/auth/me`, `/api/dashboard/summary`, create/list projects, update project status, create/list tasks, update task status, create/list users as admin, and `/api/audit-logs` as admin.
+4. Test login, `/api/auth/me`, `/api/dashboard/summary`, create/list projects, update project status, create/list tasks, update task status, create/list users as admin, create a document, submit it for review, approve/reject it as a manager, archive an approved document, and `/api/audit-logs` as admin.
 5. Confirm HTTPS works and that API errors do not expose secrets.
 
 ## W500 operational cautions
