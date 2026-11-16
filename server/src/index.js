@@ -948,6 +948,99 @@ app.post("/api/finance/customer-receipts",auth,financeManager,async(req,res)=>{
 });
 
 
+// Sales credit notes: quantities are capped against the original invoice and returned to stock on posting.
+app.get("/api/finance/sales-credit-notes",auth,async(_req,res)=>{
+ try{const r=await pool.query(`select c.*,i.invoice_number,p.name as customer_name,j.entry_number,s.document_number as stock_document_number
+  from sales_credit_notes c join sales_invoices i on i.id=c.original_invoice_id
+  join finance_parties p on p.id=c.party_id left join journal_entries j on j.id=c.journal_entry_id
+  left join stock_documents s on s.id=c.stock_document_id order by c.credit_date desc,c.created_at desc limit 300`);
+  res.json({credit_notes:r.rows});}
+ catch(e){console.error("sales credit note list failed",e.message);res.status(503).json({error:"تعذر تحميل الإشعارات الدائنة"});}
+});
+app.post("/api/finance/sales-credit-notes",auth,financeManager,async(req,res)=>{
+ const p=z.object({original_invoice_id:z.string().uuid(),credit_date:z.string().date(),lines:z.array(z.object({original_invoice_line_id:z.string().uuid(),quantity:z.coerce.number().positive().max(1000000)})).min(1).max(100)}).safeParse(req.body);
+ if(!p.success||new Set((p.success?p.data.lines:[]).map(x=>x.original_invoice_line_id)).size!==(p.success?p.data.lines.length:0))return res.status(400).json({error:"تحقق من الفاتورة الأصلية وبنود وكميات المرتجع"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const ir=await db.query("select * from sales_invoices where id=$1 for update",[p.data.original_invoice_id]);
+  if(!ir.rowCount||!["issued","partially_paid","paid"].includes(ir.rows[0].status))throw new Error("ORIGINAL_INVOICE_INVALID");
+  const inv=ir.rows[0],creditLines=[];
+  for(const requested of p.data.lines){
+   const lr=await db.query("select * from sales_invoice_lines where id=$1 and invoice_id=$2 for update",[requested.original_invoice_line_id,inv.id]);
+   if(!lr.rowCount)throw new Error("ORIGINAL_LINE_INVALID");
+   const line=lr.rows[0];
+   const returned=await db.query(`select coalesce(sum(cl.quantity),0)::numeric(14,3) quantity
+    from sales_credit_note_lines cl join sales_credit_notes cn on cn.id=cl.credit_note_id
+    where cl.original_invoice_line_id=$1 and cn.status='issued'`,[line.id]);
+   if(requested.quantity>Number(line.quantity)-Number(returned.rows[0].quantity)+0.0005)throw new Error("RETURN_QUANTITY_EXCEEDED");
+   const subtotal=Math.round(Number(line.line_subtotal)*requested.quantity/Number(line.quantity)*100)/100;
+   const tax=Math.round(Number(line.line_tax)*requested.quantity/Number(line.quantity)*100)/100;
+   creditLines.push({...line,quantity:requested.quantity,subtotal,tax,total:subtotal+tax});
+  }
+  const subtotal=Math.round(creditLines.reduce((s,l)=>s+l.subtotal,0)*100)/100;
+  const tax=Math.round(creditLines.reduce((s,l)=>s+l.tax,0)*100)/100;
+  const total=Math.round((subtotal+tax)*100)/100;
+  if(total<=0)throw new Error("CREDIT_NOTE_ZERO");
+  const n=await db.query("select nextval('sales_credit_note_number_seq') n");
+  const number="SCN-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
+  const note=await db.query(`insert into sales_credit_notes(credit_note_number,original_invoice_id,party_id,credit_date,subtotal,tax_amount,total,created_by)
+   values($1,$2,$3,$4,$5,$6,$7,$8) returning *`,[number,inv.id,inv.party_id,p.data.credit_date,subtotal,tax,total,req.user.sub]);
+  for(const l of creditLines)await db.query(`insert into sales_credit_note_lines(credit_note_id,original_invoice_line_id,item_id,description,quantity,unit_price,tax_rate,line_subtotal,line_tax,line_total)
+   values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,[note.rows[0].id,l.id,l.item_id,l.description,l.quantity,l.unit_price,l.tax_rate,l.subtotal,l.tax,l.total]);
+  await db.query("commit");await audit(req.user.sub,"finance.sales_credit_note_created","sales_credit_note",note.rows[0].id,{credit_note_number:number,total});
+  res.status(201).json({credit_note:note.rows[0]});
+ }catch(e){await db.query("rollback");const messages={ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير موجودة أو غير صادرة",ORIGINAL_LINE_INVALID:"أحد البنود لا يتبع الفاتورة الأصلية",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المباعة بعد احتساب المرتجعات السابقة",CREDIT_NOTE_ZERO:"قيمة الإشعار الدائن يجب أن تكون أكبر من صفر"};const msg=messages[e.message];if(!msg)console.error("sales credit note create failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر إنشاء الإشعار الدائن"});}
+ finally{db.release();}
+});
+app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(req,res)=>{
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const cr=await db.query("select * from sales_credit_notes where id=$1 for update",[req.params.id]);
+  if(!cr.rowCount||cr.rows[0].status!=="draft")throw new Error("CREDIT_NOTE_NOT_DRAFT");
+  const note=cr.rows[0];
+  const ir=await db.query("select * from sales_invoices where id=$1 for update",[note.original_invoice_id]);
+  if(!ir.rowCount||!["issued","partially_paid","paid"].includes(ir.rows[0].status))throw new Error("ORIGINAL_INVOICE_INVALID");
+  const inv=ir.rows[0],lines=await db.query("select * from sales_credit_note_lines where credit_note_id=$1",[note.id]);
+  for(const line of lines.rows){
+   const returned=await db.query(`select coalesce(sum(cl.quantity),0)::numeric(14,3) quantity
+    from sales_credit_note_lines cl join sales_credit_notes cn on cn.id=cl.credit_note_id
+    where cl.original_invoice_line_id=$1 and cn.status='issued'`,[line.original_invoice_line_id]);
+   const original=await db.query("select quantity from sales_invoice_lines where id=$1",[line.original_invoice_line_id]);
+   if(!original.rowCount||Number(returned.rows[0].quantity)+Number(line.quantity)>Number(original.rows[0].quantity)+0.0005)throw new Error("RETURN_QUANTITY_EXCEEDED");
+  }
+  const stockLines=lines.rows.filter(l=>l.item_id);
+  let stockDoc=null;
+  if(stockLines.length){
+   if(!inv.warehouse_id)throw new Error("RETURN_WAREHOUSE_REQUIRED");
+   const wh=await db.query("select id from warehouses where id=$1 and is_active=true",[inv.warehouse_id]);
+   if(!wh.rowCount)throw new Error("RETURN_WAREHOUSE_REQUIRED");
+   const sd=await db.query(`insert into stock_documents(document_number,document_type,status,destination_warehouse_id,reference_number,notes,created_by,posted_by,posted_at)
+    values('SCN-'||lpad(nextval('stock_document_number_seq')::text,8,'0'),'receipt','posted',$1,$2,'استلام مرتجع مبيعات',$3,$3,now()) returning id,document_number`,
+    [inv.warehouse_id,note.credit_note_number,req.user.sub]);
+   stockDoc=sd.rows[0];
+   for(const line of stockLines){
+    const cost=await db.query("select cost_price from inventory_items where id=$1",[line.item_id]);
+    await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[stockDoc.id,line.item_id,line.quantity,cost.rows[0]?.cost_price||0]);
+    await db.query(`insert into stock_balances(warehouse_id,item_id,quantity) values($1,$2,$3)
+     on conflict(warehouse_id,item_id) do update set quantity=stock_balances.quantity+excluded.quantity,updated_at=now()`,[inv.warehouse_id,line.item_id,line.quantity]);
+   }
+  }
+  if(!inv.receivable_account_id||!inv.revenue_account_id||!inv.output_tax_account_id)throw new Error("ORIGINAL_ACCOUNTS_MISSING");
+  const je=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
+   values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),$1,$2,'posted','sales_credit_note',$3,$4,$4,now()) returning id,entry_number`,
+   [note.credit_date,"إشعار دائن "+note.credit_note_number+" للفاتورة "+inv.invoice_number,note.id,req.user.sub]);
+  if(Number(note.subtotal)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,inv.revenue_account_id,inv.party_id,"عكس إيراد مرتجع "+note.credit_note_number,note.subtotal]);
+  if(Number(note.tax_amount)>0)await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,inv.output_tax_account_id,inv.party_id,"عكس ضريبة مرتجع "+note.credit_note_number,note.tax_amount]);
+  await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,inv.receivable_account_id,inv.party_id,"تخفيض ذمم العميل "+note.credit_note_number,note.total]);
+  await db.query("update sales_credit_notes set status='issued',journal_entry_id=$1,stock_document_id=$2,posted_by=$3,posted_at=now() where id=$4",[je.rows[0].id,stockDoc?.id||null,req.user.sub,note.id]);
+  await db.query("commit");await audit(req.user.sub,"finance.sales_credit_note_posted","sales_credit_note",note.id,{journal_entry_id:je.rows[0].id,stock_document_id:stockDoc?.id||null,total:note.total});
+  res.json({status:"issued",journal:je.rows[0],stock_document:stockDoc});
+ }catch(e){await db.query("rollback");const messages={CREDIT_NOTE_NOT_DRAFT:"الإشعار الدائن غير موجود أو سبق ترحيله",ORIGINAL_INVOICE_INVALID:"الفاتورة الأصلية غير صالحة",RETURN_QUANTITY_EXCEEDED:"كمية المرتجع تتجاوز الكمية المتاحة للإرجاع",RETURN_WAREHOUSE_REQUIRED:"مستودع الفاتورة الأصلية غير متاح لاستلام المرتجع",ORIGINAL_ACCOUNTS_MISSING:"الفاتورة الأصلية لا تحتوي حسابات محاسبية مكتملة"};const msg=messages[e.message];if(!msg)console.error("sales credit note posting failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر ترحيل الإشعار الدائن"});}
+ finally{db.release();}
+});
+
 app.get("/api/finance/parties/:id/statement",auth,async(req,res)=>{
  const query=z.object({from:z.string().date().optional(),to:z.string().date().optional()}).refine(v=>!v.from||!v.to||v.from<=v.to).safeParse(req.query);
  if(!query.success)return res.status(400).json({error:"نطاق تاريخ كشف الحساب غير صالح"});
