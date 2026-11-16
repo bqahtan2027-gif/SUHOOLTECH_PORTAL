@@ -107,6 +107,7 @@ export default function Documents({ token, role }: Props) {
           {doc.status==="approved" && <><option value="approved">معتمد</option><option value="archived">أرشفة</option></>}
           {doc.status==="archived" && <option value="archived">مؤرشف</option>}
         </select>}
+        {!manager && doc.status === "draft" && <button type="button" onClick={()=>changeStatus(doc.id,"review")}>إرسال للمراجعة</button>}
         {!manager && <small>{statusLabels[doc.status]}</small>}
       </article>)}
       {documents.length===0 && <div className="empty-state">لا توجد مستندات حتى الآن.</div>}
