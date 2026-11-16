@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-suhooltech}
+      POSTGRES_USER: ${POSTGRES_USER:-suhool}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set a strong POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-suhool} -d ${POSTGRES_DB:-suhooltech}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [private]
+  api:
+    build: ./server
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgres://${POSTGRES_USER:-suhool}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-suhooltech}
+      JWT_SECRET: ${JWT_SECRET:?Set a random JWT_SECRET of at least 48 characters}
+      BOOTSTRAP_TOKEN: ${BOOTSTRAP_TOKEN:?Set a one-time bootstrap token}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks: [private, edge]
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    depends_on: [api]
+    networks: [edge]
+volumes:
+  postgres_data:
+networks:
+  private:
+    internal: true
+  edge:
