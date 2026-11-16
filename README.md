@@ -22,7 +22,7 @@
 
 ## التطوير المحلي
 1. شغّل PostgreSQL.
-2. طبّق بالترتيب `database/init/001_core.sql` ثم `database/init/002_projects_dashboard.sql` ثم `database/init/003_quotes.sql` ثم `database/init/004_hr.sql` ثم `database/init/005_documents.sql` ثم `database/init/006_admin_services.sql` ثم `database/init/007_calendar.sql` ثم `database/init/008_vault.sql`.
+2. طبّق جميع ملفات `database/init/*.sql` بالترتيب الرقمي باستخدام `scripts/apply-migrations.ps1` على Windows مع ضبط `DATABASE_URL` وتثبيت PostgreSQL client tools.
 3. شغّل API من مجلد `server` بعد ضبط متغيرات البيئة.
 4. في جذر المشروع شغّل `npm install` ثم `npm run dev`. يمرر Vite طلبات `/api` إلى `http://127.0.0.1:4000`.
 
@@ -31,3 +31,10 @@
 
 ## ملاحظات الإطلاق
 هذه نسخة تشغيل أولية وليست منصة مؤسسية مكتملة بعد. قبل استخدام الخزنة، اضبط `VAULT_ENCRYPTION_KEY` كمتغير بيئة سري على الخادم واحتفظ بنسخة احتياطية آمنة منه منفصلة عن قاعدة البيانات؛ فقدانه يمنع فك تشفير الأسرار. يلزم اختبار أمني ونسخ احتياطي واستعادة قبل إدخال أسرار حقيقية. قبل استخدام بيانات الشركة الفعلية، أكمل MFA، دعوات المستخدمين واستعادة الحساب، صلاحيات دقيقة لكل وحدة، سجل تدقيق شامل، النسخ الاحتياطي والاستعادة، HTTPS، المراقبة، واختبارات أمنية مستقلة. لا تضع ملف `.env` أو كلمات المرور أو مفاتيح التشفير في Git.
+
+
+## حزمة التسليم والنشر
+عند نجاح GitHub Actions على فرع `main)، ينشئ workflow حزمة `suhooltech-w500-release-<commit-sha>` تحتوي الواجهة المبنية وAPI واعتماديات الإنتاج وجميع ملفات ترحيل PostgreSQL. هذه حزمة نشر وليست نسخة احتياطية لبيانات قاعدة البيانات ولا تعني أن التطبيق نُشر على الاستضافة.
+- دليل W500: `hosting/mywindowshosting-w500/README.md`
+- تطبيق قاعدة البيانات: `scripts/apply-migrations.ps1`
+- نسخ PostgreSQL احتياطياً: `scripts/backup-postgres.ps1`
