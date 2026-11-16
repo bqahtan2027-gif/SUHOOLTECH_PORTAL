@@ -1,4 +1,5 @@
 -- Administrative requests, purchasing approvals and company custody register
+CREATE SEQUENCE IF NOT EXISTS custody_asset_number_seq START 1;
 CREATE SEQUENCE IF NOT EXISTS admin_request_number_seq START 1;
 
 CREATE TABLE IF NOT EXISTS admin_requests (
