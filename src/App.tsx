@@ -19,7 +19,7 @@ type Module = {
 
 const modules: Module[] = [
   { id: "projects", title: "المهام والمشاريع", description: "تابع المشاريع والمهام وسير العمل من مكان واحد.", icon: FolderKanban, color: "blue", bg: "blue-bg", status: "active", label: "متاح" },
-  { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "active", label: "متاح" },
+  { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "planned", label: "قريباً" },
   { id: "hr", title: "الموارد البشرية", description: "ملفات الموظفين والإجازات والحضور.", icon: Users, color: "green", bg: "green-bg", status: "planned", label: "قريباً" },
   { id: "documents", title: "المسودات والمستندات", description: "إنشاء المستندات ومراجعتها واعتمادها وأرشفتها.", icon: FileCheck2, color: "purple", bg: "purple-bg", status: "planned", label: "قريباً" },
   { id: "admin", title: "الخدمات الإدارية", description: "الطلبات الداخلية والموافقات والعهد والمشتريات.", icon: Building2, color: "orange", bg: "orange-bg", status: "planned", label: "قريباً" },
