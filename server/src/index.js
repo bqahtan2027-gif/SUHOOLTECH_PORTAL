@@ -97,6 +97,97 @@ app.post("/api/users", auth, admin, async (req, res) => {
   } catch (e) { res.status(e.code === "23505" ? 409 : 500).json({ error: e.code === "23505" ? "البريد مسجل مسبقاً" : "تعذر إنشاء المستخدم" }); }
 });
 
+
+const meetingPayloadSchema = z.object({
+  title:z.string().trim().min(3).max(200),
+  description:z.string().max(4000).optional(),
+  location:z.string().trim().max(240).optional(),
+  starts_at:z.string().datetime({offset:true}),
+  ends_at:z.string().datetime({offset:true}),
+  attendee_ids:z.array(z.string().uuid()).max(100).default([])
+}).refine(v=>new Date(v.ends_at)>new Date(v.starts_at),{message:"وقت نهاية الاجتماع يجب أن يكون بعد بدايته"});
+app.get("/api/meetings/users",auth,async(req,res)=>{
+  try{
+    const r=await pool.query("select id,full_name,email from users where active=true and id<>$1 order by full_name limit 300",[req.user.sub]);
+    res.json({users:r.rows});
+  }catch(error){console.error("meeting users failed",error.message);res.status(503).json({error:"تعذر تحميل قائمة الموظفين"});}
+});
+app.get("/api/meetings",auth,async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      select m.id,m.title,m.description,m.location,m.starts_at,m.ends_at,m.status,m.organizer_id,m.created_at,
+        o.full_name as organizer_name,
+        coalesce(json_agg(json_build_object('user_id',u.id,'full_name',u.full_name,'response',a.response))
+          filter(where u.id is not null),'[]'::json) as attendees
+      from meetings m
+      left join users o on o.id=m.organizer_id
+      left join meeting_attendees a on a.meeting_id=m.id
+      left join users u on u.id=a.user_id
+      where m.organizer_id=$1 or exists(select 1 from meeting_attendees mine where mine.meeting_id=m.id and mine.user_id=$1)
+        or $2='admin'
+      group by m.id,o.full_name
+      order by m.starts_at desc limit 300
+    `,[req.user.sub,req.user.role]);
+    res.json({meetings:r.rows});
+  }catch(error){console.error("meetings list failed",error.message);res.status(503).json({error:"تعذر تحميل الاجتماعات. تحقق من تحديث قاعدة البيانات."});}
+});
+app.post("/api/meetings",auth,async(req,res)=>{
+  const p=meetingPayloadSchema.safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"تحقق من عنوان الاجتماع وتوقيته"});
+  const client=await pool.connect();
+  try{
+    await client.query("begin");
+    const attendeeIds=[...new Set(p.data.attendee_ids)].filter(id=>id!==req.user.sub);
+    if(attendeeIds.length){
+      const valid=await client.query("select id from users where active=true and id=any($1::uuid[])",[attendeeIds]);
+      if(valid.rowCount!==attendeeIds.length){await client.query("rollback");return res.status(400).json({error:"بعض المشاركين غير موجودين أو حساباتهم غير نشطة"});}
+    }
+    const created=await client.query(
+      "insert into meetings(title,description,location,starts_at,ends_at,organizer_id) values($1,$2,$3,$4,$5,$6) returning id",
+      [p.data.title,p.data.description||null,p.data.location||null,p.data.starts_at,p.data.ends_at,req.user.sub]
+    );
+    if(attendeeIds.length)await client.query("insert into meeting_attendees(meeting_id,user_id) select $1,unnest($2::uuid[])",[created.rows[0].id,attendeeIds]);
+    await client.query("commit");
+    await audit(req.user.sub,"meeting.created","meeting",created.rows[0].id,{attendees:attendeeIds.length});
+    const result=await pool.query(`
+      select m.*,o.full_name as organizer_name,
+        coalesce(json_agg(json_build_object('user_id',u.id,'full_name',u.full_name,'response',a.response))
+          filter(where u.id is not null),'[]'::json) as attendees
+      from meetings m left join users o on o.id=m.organizer_id
+      left join meeting_attendees a on a.meeting_id=m.id left join users u on u.id=a.user_id
+      where m.id=$1 group by m.id,o.full_name
+    `,[created.rows[0].id]);
+    res.status(201).json({meeting:result.rows[0]});
+  }catch(error){await client.query("rollback");console.error("meeting create failed",error.message);res.status(500).json({error:"تعذر إنشاء الاجتماع"});}
+  finally{client.release();}
+});
+app.patch("/api/meetings/:id/status",auth,async(req,res)=>{
+  const p=z.object({status:z.enum(["completed","cancelled"])}).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"حالة الاجتماع غير صالحة"});
+  try{
+    const r=await pool.query(
+      "update meetings set status=$1,updated_at=now() where id=$2 and status='scheduled' and (organizer_id=$3 or $4='admin' or $4='manager') returning id,status,updated_at",
+      [p.data.status,req.params.id,req.user.sub,req.user.role]
+    );
+    if(!r.rowCount)return res.status(404).json({error:"الاجتماع غير موجود أو لا تملك صلاحية تحديثه"});
+    await audit(req.user.sub,"meeting.status_changed","meeting",req.params.id,{status:p.data.status});
+    res.json({meeting:r.rows[0]});
+  }catch(error){console.error("meeting status failed",error.message);res.status(500).json({error:"تعذر تحديث الاجتماع"});}
+});
+app.patch("/api/meetings/:id/response",auth,async(req,res)=>{
+  const p=z.object({response:z.enum(["accepted","declined"])}).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"الرد غير صالح"});
+  try{
+    const r=await pool.query(
+      "update meeting_attendees set response=$1,responded_at=now() where meeting_id=$2 and user_id=$3 and exists(select 1 from meetings m where m.id=$2 and m.status='scheduled') returning meeting_id,response",
+      [p.data.response,req.params.id,req.user.sub]
+    );
+    if(!r.rowCount)return res.status(404).json({error:"الدعوة غير موجودة أو الاجتماع مغلق"});
+    await audit(req.user.sub,"meeting.response_submitted","meeting",req.params.id,{response:p.data.response});
+    res.json({response:r.rows[0].response});
+  }catch(error){console.error("meeting response failed",error.message);res.status(500).json({error:"تعذر تسجيل الرد"});}
+});
+
 const quoteItemSchema = z.object({
   description: z.string().trim().min(2).max(500),
   quantity: z.number().positive().max(1000000),
