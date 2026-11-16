@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Documents from "./Documents";
 import AdminServices from "./AdminServices";
+import Calendar from "./Calendar";
 import {
   Activity, ArrowLeft, Bell, Building2, CalendarDays,
   Check, ChevronDown, CircleHelp, Clock3, FileCheck2, FileText, FolderKanban,
@@ -38,7 +39,7 @@ function Brand() {
 export default function App() {
   const [activeNav, setActiveNav] = useState("overview");
   const [token, setToken] = useState<string | null>(null);
-  const [currentUser, setCurrentUser] = useState<{full_name:string;email:string;role:string} | null>(null);
+  const [currentUser, setCurrentUser] = useState<{id:string;full_name:string;email:string;role:string} | null>(null);
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -291,6 +292,7 @@ export default function App() {
         </section>}
         {activeNav === "documents" && <Documents token={token} role={currentUser?.role || "employee"} />}
         {activeNav === "admin" && <AdminServices token={token} role={currentUser?.role || "employee"} />}
+        {activeNav === "calendar" && <Calendar token={token} role={currentUser?.role || "employee"} userId={currentUser?.id || ""} />}
         {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المشاريع</h2><p>أنشئ مشاريع الفريق وتابع حالتها ومواعيدها.</p><form className="task-create" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="اكتب اسم المشروع الجديد..." required maxLength={180}/><button disabled={projectBusy}>{projectBusy ? "جارٍ الحفظ..." : "إضافة مشروع"}</button></form>{projectError && <div className="auth-error">{projectError}</div>}<div className="task-list">{projects.map(project=><article className="task-row" key={project.id}><div><strong>{project.name}</strong><small>{project.status === "completed" ? "مكتمل" : project.status === "on_hold" ? "متوقف مؤقتاً" : project.status === "cancelled" ? "ملغي" : "نشط"}</small></div><select aria-label="حالة المشروع" value={project.status} onChange={e=>changeProjectStatus(project.id,e.target.value)}><option value="active">نشط</option><option value="on_hold">متوقف مؤقتاً</option><option value="completed">مكتمل</option><option value="cancelled">ملغي</option></select></article>)}{projects.length===0 && <div className="empty-state">لا توجد مشاريع بعد. أضف أول مشروع.</div>}</div><div className="section-kicker" style={{marginTop:32}}>المهام</div><p>أنشئ مهام الفريق وتابع سير تنفيذها.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
 
         <section className="welcome-row">
