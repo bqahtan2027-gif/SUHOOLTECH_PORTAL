@@ -336,6 +336,104 @@ app.patch("/api/documents/:id/status", auth, async (req, res) => {
   } finally { client.release(); }
 });
 
+
+const adminServicesManager = (req,res,next) => {
+  if (!["admin","manager"].includes(req.user.role)) return res.status(403).json({error:"هذه العملية متاحة للمدير ومدير النظام"});
+  next();
+};
+const adminRequestSchema = z.object({
+  request_type:z.enum(["purchase","administrative"]),
+  title:z.string().trim().min(3).max(200),
+  description:z.string().max(5000).optional(),
+  supplier_name:z.string().trim().max(180).optional(),
+  estimated_amount:z.number().min(0).max(100000000000).optional(),
+  priority:z.enum(["low","normal","high","urgent"]).default("normal")
+});
+app.get("/api/admin/requests",auth,async(req,res)=>{
+  try{
+    const manager=["admin","manager"].includes(req.user.role);
+    const sql=manager
+      ? "select r.*,u.full_name as requester_name from admin_requests r left join users u on u.id=r.requester_id order by r.created_at desc limit 300"
+      : "select r.*,u.full_name as requester_name from admin_requests r left join users u on u.id=r.requester_id where r.requester_id=$1 order by r.created_at desc limit 100";
+    const result=await pool.query(sql,manager?[]:[req.user.sub]);
+    res.json({requests:result.rows});
+  }catch(error){console.error("admin requests list failed",error.message);res.status(503).json({error:"تعذر تحميل الطلبات الإدارية. تحقق من تحديث قاعدة البيانات."});}
+});
+app.post("/api/admin/requests",auth,async(req,res)=>{
+  const p=adminRequestSchema.safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"تحقق من نوع الطلب وعنوانه والتكلفة"});
+  try{
+    const n=await pool.query("select nextval('admin_request_number_seq') as n");
+    const requestNumber=`ADM-${new Date().getFullYear()}-${String(n.rows[0].n).padStart(6,"0")}`;
+    const result=await pool.query(
+      "insert into admin_requests(request_number,request_type,title,description,supplier_name,estimated_amount,priority,requester_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning *",
+      [requestNumber,p.data.request_type,p.data.title,p.data.description||null,p.data.supplier_name||null,p.data.estimated_amount??null,p.data.priority,req.user.sub]
+    );
+    await audit(req.user.sub,"admin.request_created","admin_request",result.rows[0].id,{request_number:requestNumber,request_type:p.data.request_type});
+    res.status(201).json({request:result.rows[0]});
+  }catch(error){console.error("admin request create failed",error.message);res.status(500).json({error:"تعذر إنشاء الطلب"});}
+});
+app.patch("/api/admin/requests/:id/status",auth,adminServicesManager,async(req,res)=>{
+  const p=z.object({status:z.enum(["approved","rejected","fulfilled"]),decision_note:z.string().max(1000).optional()}).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"حالة الطلب أو الملاحظة غير صالحة"});
+  const client=await pool.connect();
+  try{
+    await client.query("begin");
+    const current=await client.query("select id,status from admin_requests where id=$1 for update",[req.params.id]);
+    if(!current.rowCount){await client.query("rollback");return res.status(404).json({error:"الطلب غير موجود"});}
+    const from=current.rows[0].status,to=p.data.status;
+    const allowed=from==="pending"?["approved","rejected"]:from==="approved"?["fulfilled"]:[];
+    if(!allowed.includes(to)){await client.query("rollback");return res.status(409).json({error:"لا يمكن تنفيذ هذا الانتقال على حالة الطلب الحالية"});}
+    const updated=await client.query(
+      "update admin_requests set status=$1,decision_note=$2,reviewed_by=$3,reviewed_at=now(),updated_at=now() where id=$4 returning id,request_number,status,decision_note,reviewed_by,reviewed_at,updated_at",
+      [to,p.data.decision_note||null,req.user.sub,req.params.id]
+    );
+    await client.query("commit");
+    await audit(req.user.sub,"admin.request_status_changed","admin_request",req.params.id,{from,to});
+    res.json({request:updated.rows[0]});
+  }catch(error){await client.query("rollback");console.error("admin request status failed",error.message);res.status(500).json({error:"تعذر تحديث الطلب"});}
+  finally{client.release();}
+});
+app.get("/api/admin/custody",auth,async(req,res)=>{
+  try{
+    const manager=["admin","manager"].includes(req.user.role);
+    const sql=manager
+      ? "select a.*,u.full_name as assignee_name from custody_assets a left join users u on u.id=a.assigned_to order by a.assigned_at desc limit 500"
+      : "select a.*,u.full_name as assignee_name from custody_assets a left join users u on u.id=a.assigned_to where a.assigned_to=$1 order by a.assigned_at desc limit 200";
+    const result=await pool.query(sql,manager?[]:[req.user.sub]);
+    res.json({assets:result.rows});
+  }catch(error){console.error("custody list failed",error.message);res.status(503).json({error:"تعذر تحميل سجل العهد. تحقق من تحديث قاعدة البيانات."});}
+});
+app.post("/api/admin/custody",auth,adminServicesManager,async(req,res)=>{
+  const p=z.object({
+    asset_name:z.string().trim().min(2).max(180),serial_number:z.string().trim().max(120).optional(),
+    assigned_to:z.string().uuid(),condition_note:z.string().max(1000).optional()
+  }).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"تحقق من اسم الأصل والموظف"});
+  try{
+    const result=await pool.query(
+      "insert into custody_assets(asset_number,asset_name,serial_number,assigned_to,assigned_by,condition_note) values('AST-' || lpad(nextval('custody_asset_number_seq')::text,6,'0'),$1,$2,$3,$4,$5) returning *",
+      [p.data.asset_name,p.data.serial_number||null,p.data.assigned_to,req.user.sub,p.data.condition_note||null]
+    );
+    await audit(req.user.sub,"admin.custody_assigned","custody_asset",result.rows[0].id,{asset_number:result.rows[0].asset_number,assigned_to:p.data.assigned_to});
+    const named=await pool.query("select a.*,u.full_name as assignee_name from custody_assets a left join users u on u.id=a.assigned_to where a.id=$1",[result.rows[0].id]);
+    res.status(201).json({asset:named.rows[0]});
+  }catch(error){console.error("custody create failed",error.message);res.status(500).json({error:"تعذر تسجيل العهدة"});}
+});
+app.patch("/api/admin/custody/:id/status",auth,adminServicesManager,async(req,res)=>{
+  const p=z.object({status:z.enum(["returned","damaged"])}).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"حالة العهدة غير صالحة"});
+  try{
+    const result=await pool.query(
+      "update custody_assets set status=$1,returned_at=now() where id=$2 and status='assigned' returning id,asset_number,status,returned_at",
+      [p.data.status,req.params.id]
+    );
+    if(!result.rowCount)return res.status(404).json({error:"العهدة غير موجودة أو سبق إغلاقها"});
+    await audit(req.user.sub,"admin.custody_status_changed","custody_asset",req.params.id,{status:p.data.status});
+    res.json({asset:result.rows[0]});
+  }catch(error){console.error("custody status failed",error.message);res.status(500).json({error:"تعذر تحديث العهدة"});}
+});
+
 async function audit(actorId, action, entityType, entityId, metadata = {}) {
   try {
     await pool.query(
