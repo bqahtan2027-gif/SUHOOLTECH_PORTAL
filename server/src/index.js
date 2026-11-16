@@ -385,9 +385,10 @@ app.patch("/api/admin/requests/:id/status",auth,adminServicesManager,async(req,r
   const client=await pool.connect();
   try{
     await client.query("begin");
-    const current=await client.query("select id,status from admin_requests where id=$1 for update",[req.params.id]);
+    const current=await client.query("select id,status,requester_id from admin_requests where id=$1 for update",[req.params.id]);
     if(!current.rowCount){await client.query("rollback");return res.status(404).json({error:"الطلب غير موجود"});}
     const from=current.rows[0].status,to=p.data.status;
+    if(current.rows[0].requester_id===req.user.sub){await client.query("rollback");return res.status(403).json({error:"لا يمكن اعتماد طلبك بنفسك؛ يلزم اعتماد مدير آخر"});}
     const allowed=from==="pending"?["approved","rejected"]:from==="approved"?["fulfilled"]:[];
     if(!allowed.includes(to)){await client.query("rollback");return res.status(409).json({error:"لا يمكن تنفيذ هذا الانتقال على حالة الطلب الحالية"});}
     const updated=await client.query(
@@ -418,9 +419,10 @@ app.post("/api/admin/custody",auth,adminServicesManager,async(req,res)=>{
   if(!p.success)return res.status(400).json({error:"تحقق من اسم الأصل والموظف"});
   try{
     const result=await pool.query(
-      "insert into custody_assets(asset_number,asset_name,serial_number,assigned_to,assigned_by,condition_note) values('AST-' || lpad(nextval('custody_asset_number_seq')::text,6,'0'),$1,$2,$3,$4,$5) returning *",
+      "insert into custody_assets(asset_number,asset_name,serial_number,assigned_to,assigned_by,condition_note) select 'AST-' || lpad(nextval('custody_asset_number_seq')::text,6,'0'),$1,$2,u.id,$4,$5 from users u where u.id=$3 and u.active=true returning *",
       [p.data.asset_name,p.data.serial_number||null,p.data.assigned_to,req.user.sub,p.data.condition_note||null]
     );
+    if(!result.rowCount)return res.status(400).json({error:"حساب الموظف غير موجود أو غير نشط"});
     await audit(req.user.sub,"admin.custody_assigned","custody_asset",result.rows[0].id,{asset_number:result.rows[0].asset_number,assigned_to:p.data.assigned_to});
     const named=await pool.query("select a.*,u.full_name as assignee_name from custody_assets a left join users u on u.id=a.assigned_to where a.id=$1",[result.rows[0].id]);
     res.status(201).json({asset:named.rows[0]});
