@@ -34,9 +34,9 @@ export default function AdminServices({token,role}:Props) {
     if(!a.ok)throw new Error(ad.error||"تعذر تحميل سجل العهد");
     setRequests(rd.requests||[]);setAssets(ad.assets||[]);
     if(manager){
-      const u=await fetch("/api/hr/employees",{headers});const ud=await u.json();
+      const u=await fetch("/api/hr/assignable-users",{headers});const ud=await u.json();
       if(!u.ok)throw new Error(ud.error||"تعذر تحميل الموظفين");
-      setUsers((ud.employees||[]).filter((x:{status:string})=>x.status==="active").map((x:{user_id?:string;id:string;full_name:string;email?:string})=>({id:x.user_id||"",full_name:x.full_name,email:x.email||""})).filter((x:{id:string})=>Boolean(x.id)));
+      setUsers(ud.users||[]);
     }
   };
   useEffect(()=>{load().catch(e=>setError(e instanceof Error?e.message:"تعذر تحميل البيانات"));},[token,role]);
