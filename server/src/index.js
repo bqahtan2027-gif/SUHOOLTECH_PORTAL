@@ -29,7 +29,10 @@ function auth(req, res, next) {
     const value = req.headers.authorization || "";
     if (!value.startsWith("Bearer ")) return res.status(401).json({ error: "يلزم تسجيل الدخول" });
     req.user = jwt.verify(value.slice(7), process.env.JWT_SECRET, { algorithms: ["HS256"], issuer: "suhooltech", audience: "suhooltech-portal" });
-    next();
+    pool.query("select 1 from users where id=$1 and active=true", [req.user.sub]).then(result => {
+      if (!result.rowCount) return res.status(401).json({ error: "الحساب غير نشط" });
+      next();
+    }).catch(() => res.status(503).json({ error: "تعذر التحقق من الحساب" }));
   } catch { return res.status(401).json({ error: "انتهت الجلسة أو أن بيانات الدخول غير صالحة" }); }
 }
 function admin(req, res, next) {
@@ -47,6 +50,7 @@ app.post("/api/auth/bootstrap", async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query("begin");
+    await client.query("select pg_advisory_xact_lock(734921055)");
     const count = await client.query("select count(*)::int as n from users");
     if (count.rows[0].n !== 0) { await client.query("rollback"); return res.status(409).json({ error: "تم إنشاء المدير الأول مسبقاً" }); }
     const hash = await bcrypt.hash(parsed.data.password, 12);
