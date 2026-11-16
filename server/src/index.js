@@ -1083,6 +1083,44 @@ app.post("/api/finance/sales-credit-notes/:id/post",auth,financeManager,async(re
  finally{db.release();}
 });
 
+app.post("/api/finance/customer-refunds",auth,financeManager,async(req,res)=>{
+ const p=z.object({credit_note_id:z.string().uuid(),amount:z.coerce.number().positive().max(999999999),payment_method:z.enum(["cash","bank_transfer","card","other"]),payment_account_id:z.string().uuid(),reference_number:z.string().max(100).optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من الإشعار الدائن والمبلغ وحساب الصندوق أو البنك"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const cr=await db.query("select * from sales_credit_notes where id=$1 for update",[p.data.credit_note_id]);
+  if(!cr.rowCount||cr.rows[0].status!=="issued")throw new Error("CREDIT_NOTE_UNAVAILABLE");
+  const note=cr.rows[0];
+  if(!note.customer_credit_account_id||Number(note.customer_credit_amount)<=0)throw new Error("NO_REFUNDABLE_CREDIT");
+  const refunded=await db.query("select coalesce(sum(amount),0)::numeric(16,2) amount from sales_credit_note_refunds where credit_note_id=$1",[note.id]);
+  const remaining=Math.round((Number(note.customer_credit_amount)-Number(refunded.rows[0].amount))*100)/100;
+  const amount=Math.round(p.data.amount*100)/100;
+  if(amount<=0||amount>remaining+0.001)throw new Error("REFUND_EXCEEDS_CREDIT");
+  const accounts=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[[p.data.payment_account_id,note.customer_credit_account_id]]);
+  const types=new Map(accounts.rows.map(x=>[x.id,x.account_type]));
+  if(accounts.rowCount!==2||types.get(p.data.payment_account_id)!=="asset"||types.get(note.customer_credit_account_id)!=="liability"||p.data.payment_account_id===note.customer_credit_account_id)throw new Error("REFUND_ACCOUNT_TYPES");
+  const n=await db.query("select nextval('customer_refund_number_seq') n");
+  const refundNumber="CRF-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
+  const je=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
+   values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),current_date,$1,'posted','customer_refund',$2,$3,$3,now()) returning id,entry_number`,
+   ["استرداد مبلغ للعميل "+note.credit_note_number,note.id,req.user.sub]);
+  await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,note.customer_credit_account_id,note.party_id,"تسوية رصيد دائن "+refundNumber,amount]);
+  await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,p.data.payment_account_id,note.party_id,"صرف استرداد "+refundNumber,amount]);
+  const rr=await db.query(`insert into sales_credit_note_refunds(refund_number,credit_note_id,amount,payment_method,payment_account_id,reference_number,journal_entry_id,created_by)
+   values($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
+   [refundNumber,note.id,amount,p.data.payment_method,p.data.payment_account_id,p.data.reference_number||null,je.rows[0].id,req.user.sub]);
+  await db.query("commit");
+  await audit(req.user.sub,"finance.customer_refund_created","sales_credit_note_refund",rr.rows[0].id,{refund_number:refundNumber,credit_note_id:note.id,amount});
+  res.status(201).json({refund:rr.rows[0],journal:je.rows[0],remaining:Math.max(0,remaining-amount)});
+ }catch(e){
+  await db.query("rollback");
+  const messages={CREDIT_NOTE_UNAVAILABLE:"الإشعار الدائن غير موجود أو غير مرحّل",NO_REFUNDABLE_CREDIT:"لا يوجد رصيد دائن قابل للاسترداد لهذا الإشعار",REFUND_EXCEEDS_CREDIT:"مبلغ الاسترداد يتجاوز رصيد العميل الدائن المتاح",REFUND_ACCOUNT_TYPES:"اختر حساب التزامات الرصيد الدائن وحساب صندوق أو بنك نشطين ومختلفين"};
+  const msg=messages[e.message];if(!msg)console.error("customer refund failed",e.message);
+  res.status(msg?400:500).json({error:msg||"تعذر تسجيل استرداد العميل"});
+ }finally{db.release();}
+});
+
 app.get("/api/finance/parties/:id/statement",auth,async(req,res)=>{
  const query=z.object({from:z.string().date().optional(),to:z.string().date().optional()}).refine(v=>!v.from||!v.to||v.from<=v.to).safeParse(req.query);
  if(!query.success)return res.status(400).json({error:"نطاق تاريخ كشف الحساب غير صالح"});
