@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
-  Activity, ArrowLeft, Bell, BriefcaseBusiness, Building2, CalendarDays,
+  Activity, ArrowLeft, Bell, Building2, CalendarDays,
   Check, ChevronDown, CircleHelp, Clock3, FileCheck2, FileText, FolderKanban,
   Globe2, KeyRound, LayoutDashboard, Menu, Search, Settings2, ShieldCheck,
   Users, X, Zap
@@ -108,6 +108,8 @@ export default function App() {
       </header>
 
       <div className="page-content">
+        {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المهام والمشاريع</h2><p>أنشئ مهام الفريق وتابع حالتها من مكان واحد.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
+
         <section className="welcome-row">
           <div><div className="eyebrow"><span className="eyebrow-line"/> {isArabic ? "بوابة الأنظمة المتكاملة" : "INTEGRATED WORKSPACE"}</div><h1>{isArabic ? "مرحباً بك في سهول تيك" : "Welcome to Suhool Tech"}<span className="wave">✦</span></h1><p>{isArabic ? "مساحة عملك الرقمية، كل أدواتك وأنظمتك في مكان واحد." : "Your digital workspace, with all your tools in one place."}</p></div>
           <div className="date-chip"><CalendarDays size={16}/><span>{new Intl.DateTimeFormat(isArabic ? "ar-SA" : "en-US", { dateStyle: "full" }).format(new Date())}</span></div>
