@@ -893,6 +893,53 @@ app.post("/api/finance/sales-invoices/:id/post",auth,financeManager,async(req,re
 });
 
 
+app.get("/api/finance/customer-receipts",auth,async(_req,res)=>{
+ try{const r=await pool.query(`select r.*,p.name as customer_name,i.invoice_number,j.entry_number,a.account_code,a.account_name
+  from finance_receipts r left join finance_parties p on p.id=r.party_id
+  left join sales_invoices i on i.id=r.invoice_id left join journal_entries j on j.id=r.journal_entry_id
+  left join finance_accounts a on a.id=r.payment_account_id
+  order by r.received_at desc limit 300`);res.json({receipts:r.rows});}
+ catch(e){console.error("customer receipts list failed",e.message);res.status(503).json({error:"تعذر تحميل سندات القبض"});}
+});
+app.post("/api/finance/customer-receipts",auth,financeManager,async(req,res)=>{
+ const p=z.object({invoice_id:z.string().uuid(),amount:z.coerce.number().positive().max(999999999),payment_method:z.enum(["cash","bank_transfer","card","other"]),payment_account_id:z.string().uuid(),reference_number:z.string().max(100).optional(),received_at:z.string().datetime({offset:true}).optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من الفاتورة والمبلغ وطريقة الدفع وحساب الصندوق أو البنك"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const ir=await db.query("select * from sales_invoices where id=$1 for update",[p.data.invoice_id]);
+  if(!ir.rowCount||!["issued","partially_paid"].includes(ir.rows[0].status))throw new Error("INVOICE_UNAVAILABLE");
+  const inv=ir.rows[0];
+  if(!inv.receivable_account_id)throw new Error("AR_ACCOUNT_MISSING");
+  const acc=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[ [p.data.payment_account_id,inv.receivable_account_id] ]);
+  const types=new Map(acc.rows.map(x=>[x.id,x.account_type]));
+  if(acc.rowCount!==2||types.get(p.data.payment_account_id)!=="asset"||types.get(inv.receivable_account_id)!=="asset"||p.data.payment_account_id===inv.receivable_account_id)throw new Error("INVALID_PAYMENT_ACCOUNT");
+  const paid=await db.query("select coalesce(sum(amount),0)::numeric(16,2) amount from sales_receipt_allocations where invoice_id=$1",[inv.id]);
+  const outstanding=Math.round((Number(inv.total)-Number(paid.rows[0].amount))*100)/100;
+  const amount=Math.round(p.data.amount*100)/100;
+  if(amount<=0||amount>outstanding+0.001)throw new Error("AMOUNT_EXCEEDS_DUE");
+  const n=await db.query("select nextval('receipt_number_seq') n");
+  const receiptNumber="RCPT-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
+  const je=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
+   values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),coalesce($1::date,current_date),$2,'posted','customer_receipt',gen_random_uuid(),$3,$3,now()) returning id,entry_number`,
+   [p.data.received_at||null,"سند قبض "+receiptNumber+" للفاتورة "+inv.invoice_number,req.user.sub]);
+  await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,$5,0)",[je.rows[0].id,p.data.payment_account_id,inv.party_id,"استلام دفعة "+receiptNumber,amount]);
+  await db.query("insert into journal_lines(entry_id,account_id,party_id,description,debit,credit) values($1,$2,$3,$4,0,$5)",[je.rows[0].id,inv.receivable_account_id,inv.party_id,"تسوية ذمم "+inv.invoice_number,amount]);
+  const rr=await db.query(`insert into finance_receipts(receipt_number,party_id,invoice_id,amount,payment_method,reference_number,received_at,created_by,journal_entry_id,payment_account_id)
+   values($1,$2,$3,$4,$5,$6,coalesce($7::timestamptz,now()),$8,$9,$10) returning *`,
+   [receiptNumber,inv.party_id,inv.id,amount,p.data.payment_method,p.data.reference_number||null,p.data.received_at||null,req.user.sub,je.rows[0].id,p.data.payment_account_id]);
+  await db.query("insert into sales_receipt_allocations(receipt_id,invoice_id,amount) values($1,$2,$3)",[rr.rows[0].id,inv.id,amount]);
+  const newPaid=Number(paid.rows[0].amount)+amount;
+  const status=newPaid+0.001>=Number(inv.total)?"paid":"partially_paid";
+  await db.query("update sales_invoices set status=$1,updated_at=now() where id=$2",[status,inv.id]);
+  await db.query("commit");
+  await audit(req.user.sub,"finance.customer_receipt_created","finance_receipt",rr.rows[0].id,{receipt_number:receiptNumber,invoice_number:inv.invoice_number,amount,status});
+  res.status(201).json({receipt:rr.rows[0],invoice_status:status,outstanding:Math.max(0,Number(inv.total)-newPaid)});
+ }catch(e){await db.query("rollback");const messages={INVOICE_UNAVAILABLE:"الفاتورة غير صادرة أو غير موجودة",AR_ACCOUNT_MISSING:"الفاتورة لا تحتوي حساب ذمم العملاء",INVALID_PAYMENT_ACCOUNT:"اختر حساب صندوق أو بنك نشطاً ومختلفاً عن حساب العملاء",AMOUNT_EXCEEDS_DUE:"مبلغ القبض أكبر من المبلغ المتبقي على الفاتورة"};const msg=messages[e.message];if(!msg)console.error("customer receipt create failed",e.message);res.status(msg?400:500).json({error:msg||"تعذر تسجيل سند القبض"});}
+ finally{db.release();}
+});
+
+
 const enterpriseManager=(req,res,next)=>["admin","manager"].includes(req.user.role)?next():res.status(403).json({error:"هذه العملية متاحة للمدير ومدير النظام"});
 app.get("/api/crm/leads",auth,async(_req,res)=>{try{const r=await pool.query("select * from crm_leads order by created_at desc limit 300");res.json({leads:r.rows});}catch(e){res.status(503).json({error:"تعذر تحميل العملاء المحتملين"});}});
 app.post("/api/crm/leads",auth,async(req,res)=>{const p=z.object({company_name:z.string().trim().min(2).max(180),contact_name:z.string().max(160).optional(),email:z.string().email().max(254).optional().or(z.literal("")),phone:z.string().max(40).optional(),source:z.string().max(60).optional(),estimated_value:z.coerce.number().min(0).max(999999999).default(0),notes:z.string().max(4000).optional()}).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من بيانات العميل المحتمل"});try{const r=await pool.query("insert into crm_leads(lead_number,company_name,contact_name,email,phone,source,estimated_value,notes,created_by) values('LEAD-'||lpad(nextval('crm_lead_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6,$7,$8) returning *",[p.data.company_name,p.data.contact_name||null,p.data.email||null,p.data.phone||null,p.data.source||null,p.data.estimated_value,p.data.notes||null,req.user.sub]);await audit(req.user.sub,"crm.lead_created","crm_lead",r.rows[0].id);res.status(201).json({lead:r.rows[0]});}catch(e){res.status(500).json({error:"تعذر حفظ العميل المحتمل"});}});
