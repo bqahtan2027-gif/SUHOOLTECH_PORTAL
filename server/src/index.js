@@ -189,6 +189,39 @@ app.patch("/api/projects/:id/status", auth, async (req, res) => {
   }
 });
 
+app.patch("/api/users/:id", auth, admin, async (req, res) => {
+  const schema = z.object({
+    role: z.enum(["admin","manager","employee"]).optional(),
+    active: z.boolean().optional()
+  }).refine(value => value.role !== undefined || value.active !== undefined);
+  const p = schema.safeParse(req.body);
+  if (!p.success) return res.status(400).json({ error: "حدد الصلاحية أو حالة الحساب بشكل صحيح" });
+  if (req.params.id === req.user.sub && p.data.active === false) return res.status(400).json({ error: "لا يمكنك إيقاف حسابك الحالي" });
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const current = await client.query("select id,role,active from users where id=$1 for update", [req.params.id]);
+    if (!current.rowCount) { await client.query("rollback"); return res.status(404).json({ error: "المستخدم غير موجود" }); }
+    const nextRole = p.data.role ?? current.rows[0].role;
+    const nextActive = p.data.active ?? current.rows[0].active;
+    if (current.rows[0].role === "admin" && current.rows[0].active && (nextRole !== "admin" || !nextActive)) {
+      const admins = await client.query("select count(*)::int as n from users where role='admin' and active=true");
+      if (admins.rows[0].n <= 1) { await client.query("rollback"); return res.status(409).json({ error: "لا يمكن تعطيل أو تخفيض صلاحية آخر مدير نشط" }); }
+    }
+    const updated = await client.query(
+      "update users set role=$1,active=$2 where id=$3 returning id,full_name,email,role,active,last_login_at,created_at",
+      [nextRole,nextActive,req.params.id]
+    );
+    await client.query("commit");
+    await audit(req.user.sub, "user.updated", "user", req.params.id, { role: nextRole, active: nextActive });
+    res.json({ user: updated.rows[0] });
+  } catch (error) {
+    await client.query("rollback");
+    console.error("user update failed", error.message);
+    res.status(500).json({ error: "تعذر تحديث المستخدم" });
+  } finally { client.release(); }
+});
+
 app.get("/api/audit-logs", auth, admin, async (req, res) => {
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
   const r = await pool.query(
