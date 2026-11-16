@@ -19,7 +19,7 @@ type Module = {
 
 const modules: Module[] = [
   { id: "projects", title: "المهام والمشاريع", description: "تابع المشاريع والمهام وسير العمل من مكان واحد.", icon: FolderKanban, color: "blue", bg: "blue-bg", status: "active", label: "متاح" },
-  { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "planned", label: "قريباً" },
+  { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "active", label: "متاح" },
   { id: "hr", title: "الموارد البشرية", description: "ملفات الموظفين والإجازات والحضور.", icon: Users, color: "green", bg: "green-bg", status: "planned", label: "قريباً" },
   { id: "documents", title: "المسودات والمستندات", description: "إنشاء المستندات ومراجعتها واعتمادها وأرشفتها.", icon: FileCheck2, color: "purple", bg: "purple-bg", status: "planned", label: "قريباً" },
   { id: "admin", title: "الخدمات الإدارية", description: "الطلبات الداخلية والموافقات والعهد والمشتريات.", icon: Building2, color: "orange", bg: "orange-bg", status: "planned", label: "قريباً" },
@@ -49,6 +49,10 @@ export default function App() {
   const [summary, setSummary] = useState<{projects:{total:number;active:number;completed:number};tasks:{total:number;completed:number;open:number;overdue:number};users:{total:number;active:number}} | null>(null);
   const [users, setUsers] = useState<Array<{id:string;full_name:string;email:string;role:string;active:boolean;last_login_at?:string}>>([]);
   const [auditLogs, setAuditLogs] = useState<Array<{id:number;action:string;entity_type:string;entity_id?:string;actor_name?:string;created_at:string}>>([]);
+  const [quotes, setQuotes] = useState<Array<{id:string;quote_number:string;client_name:string;status:string;subtotal:string;tax_amount:string;total:string;valid_until?:string;items:Array<{description:string}>}>>([]);
+  const [quoteForm, setQuoteForm] = useState({client_name:"",client_email:"",description:"",quantity:"1",unit_price:"",discount_amount:"",valid_until:"",notes:""});
+  const [quoteError, setQuoteError] = useState("");
+  const [quoteBusy, setQuoteBusy] = useState(false);
   const [newUser, setNewUser] = useState({name:"",email:"",password:"",role:"employee"});
   const [userError, setUserError] = useState("");
   const [userBusy, setUserBusy] = useState(false);
@@ -68,6 +72,10 @@ export default function App() {
   const [taskBusy, setTaskBusy] = useState(false);
   const [taskError, setTaskError] = useState("");
   useEffect(() => {
+    if (activeNav !== "quotes" || !token) return;
+    fetch("/api/quotes", {headers:{Authorization:`Bearer ${token}`}}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل عروض الأسعار");setQuotes(d.quotes||[]);}).catch(e=>setQuoteError(e instanceof Error?e.message:"تعذر تحميل عروض الأسعار"));
+  }, [activeNav, token]);
+  useEffect(() => {
     if (activeNav !== "projects" || !token) return;
     fetch("/api/projects", { headers: { Authorization: `Bearer ${token}` } })
       .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "تعذر تحميل المشاريع"); setProjects(data.projects || []); })
@@ -79,6 +87,24 @@ export default function App() {
       .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "تعذر تحميل المهام"); setTasks(data.tasks || []); })
       .catch(error => setTaskError(error instanceof Error ? error.message : "تعذر تحميل المهام"));
   }, [activeNav, token]);
+  const createQuote = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); if(!token)return; setQuoteBusy(true); setQuoteError("");
+    try {
+      const response=await fetch("/api/quotes",{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({
+        client_name:quoteForm.client_name,client_email:quoteForm.client_email,valid_until:quoteForm.valid_until||undefined,
+        discount_amount:Number(quoteForm.discount_amount||0),notes:quoteForm.notes,
+        items:[{description:quoteForm.description,quantity:Number(quoteForm.quantity),unit_price:Number(quoteForm.unit_price)}]
+      })});
+      const data=await response.json(); if(!response.ok)throw new Error(data.error||"تعذر إنشاء عرض السعر");
+      setQuotes(current=>[data.quote,...current]); setQuoteForm({client_name:"",client_email:"",description:"",quantity:"1",unit_price:"",discount_amount:"",valid_until:"",notes:""});
+    } catch(error){setQuoteError(error instanceof Error?error.message:"تعذر إنشاء عرض السعر");}
+    finally{setQuoteBusy(false);}
+  };
+  const changeQuoteStatus = async (id:string,status:string) => {
+    if(!token)return; setQuoteError("");
+    try { const response=await fetch(`/api/quotes/${id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({status})}); const data=await response.json(); if(!response.ok)throw new Error(data.error||"تعذر تحديث العرض"); setQuotes(current=>current.map(q=>q.id===id?{...q,status:data.quote.status}:q)); }
+    catch(error){setQuoteError(error instanceof Error?error.message:"تعذر تحديث حالة العرض");}
+  };
   const createTask = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!token || !taskTitle.trim()) return; setTaskBusy(true); setTaskError("");
     try { const response = await fetch("/api/tasks", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({title:taskTitle.trim()}) }); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر إنشاء المهمة"); setTasks(current=>[data.task,...current]); setTaskTitle(""); }
@@ -154,7 +180,7 @@ export default function App() {
       </nav>
       <div className="nav-label systems-label">{isArabic ? "أنظمة الشركة" : "WORKSPACE"}</div>
       <nav className="nav-list">
-        {modules.filter(m => m.status === "active").map(m => <button className="nav-item" key={m.id} onClick={() => setActiveNav(m.id)}><m.icon size={19}/><span>{m.title}</span><span className="nav-dot"/></button>)}
+        {modules.filter(m => m.status === "active").map(m => <button className={activeNav === m.id ? "nav-item selected" : "nav-item"} key={m.id} onClick={() => setActiveNav(m.id)}><m.icon size={19}/><span>{m.title}</span><span className="nav-dot"/></button>)}
       </nav>
       <div className="sidebar-spacer"/>
       <div className="help-card"><div className="help-icon"><CircleHelp size={18}/></div><b>{isArabic ? "هل تحتاج إلى مساعدة؟" : "Need some help?"}</b><p>{isArabic ? "فريقنا هنا لمساعدتك في استخدام المنصة." : "Our team is here to help."}</p><button onClick={() => setActiveNav("help")}>{isArabic ? "مركز المساعدة" : "Help center"} <ArrowLeft size={14}/></button></div>
@@ -187,6 +213,22 @@ export default function App() {
           <div className="task-list">{users.map(user=><article className="task-row" key={user.id}><div><strong>{user.full_name}</strong><small>{user.email} · {user.role==="admin"?"مدير النظام":user.role==="manager"?"مدير فريق":"موظف"} · {user.active?"نشط":"موقوف"}</small></div><div style={{display:"flex",gap:8,alignItems:"center"}}><select aria-label="دور المستخدم" value={user.role} onChange={e=>updateUser(user.id,{role:e.target.value})}><option value="employee">موظف</option><option value="manager">مدير فريق</option><option value="admin">مدير النظام</option></select><button type="button" onClick={()=>updateUser(user.id,{active:!user.active})}>{user.active?"إيقاف":"تفعيل"}</button></div></article>)}</div>
         </section>}
         {activeNav === "activity" && currentUser?.role === "admin" && <section className="tasks-panel"><div className="section-kicker">الشفافية والحوكمة</div><h2>سجل نشاط النظام</h2><p>آخر العمليات المسجلة على حسابات ومشاريع ومهام الشركة.</p>{userError && <div className="auth-error">{userError}</div>}<div className="task-list">{auditLogs.map(log=><article className="task-row" key={log.id}><div><strong>{log.action}</strong><small>{log.actor_name||"النظام"} · {log.entity_type} {log.entity_id||""}</small></div><small>{new Intl.DateTimeFormat("ar-SA",{dateStyle:"short",timeStyle:"short"}).format(new Date(log.created_at))}</small></article>)}{auditLogs.length===0&&<div className="empty-state">لا توجد أحداث مسجلة حتى الآن.</div>}</div></section>}
+        {activeNav === "quotes" && <section className="tasks-panel"><div className="section-kicker">المبيعات والتسعير</div><h2>عروض الأسعار</h2><p>أنشئ عرضاً للعميل، ويحسب النظام ضريبة القيمة المضافة 15٪ والإجمالي تلقائياً.</p>
+          {(currentUser?.role==="admin"||currentUser?.role==="manager") && <form className="task-create" onSubmit={createQuote} style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(190px,1fr))",gap:10}}>
+            <input placeholder="اسم العميل" required minLength={2} value={quoteForm.client_name} onChange={e=>setQuoteForm(v=>({...v,client_name:e.target.value}))}/>
+            <input type="email" placeholder="البريد الإلكتروني (اختياري)" value={quoteForm.client_email} onChange={e=>setQuoteForm(v=>({...v,client_email:e.target.value}))}/>
+            <input placeholder="وصف المنتج أو الخدمة" required minLength={2} value={quoteForm.description} onChange={e=>setQuoteForm(v=>({...v,description:e.target.value}))}/>
+            <input type="number" min="0.001" step="0.001" placeholder="الكمية" required value={quoteForm.quantity} onChange={e=>setQuoteForm(v=>({...v,quantity:e.target.value}))}/>
+            <input type="number" min="0" step="0.01" placeholder="سعر الوحدة (ر.س)" required value={quoteForm.unit_price} onChange={e=>setQuoteForm(v=>({...v,unit_price:e.target.value}))}/>
+            <input type="number" min="0" step="0.01" placeholder="الخصم (ر.س)" value={quoteForm.discount_amount} onChange={e=>setQuoteForm(v=>({...v,discount_amount:e.target.value}))}/>
+            <input type="date" aria-label="صالح حتى" value={quoteForm.valid_until} onChange={e=>setQuoteForm(v=>({...v,valid_until:e.target.value}))}/>
+            <input placeholder="ملاحظات (اختياري)" value={quoteForm.notes} onChange={e=>setQuoteForm(v=>({...v,notes:e.target.value}))}/>
+            <button disabled={quoteBusy||!quoteForm.unit_price}>{quoteBusy?"جارٍ الحفظ...":"إنشاء عرض السعر"}</button>
+          </form>}
+          {quoteError&&<div className="auth-error">{quoteError}</div>}
+          <div className="task-list">{quotes.map(q=><article className="task-row" key={q.id}><div><strong>{q.quote_number} · {q.client_name}</strong><small>{q.items?.map(i=>i.description).join("، ")} · قبل الضريبة: {Number(q.subtotal).toLocaleString("ar-SA")} ر.س · الضريبة: {Number(q.tax_amount).toLocaleString("ar-SA")} ر.س · الإجمالي: <b>{Number(q.total).toLocaleString("ar-SA")} ر.س</b></small><small>{q.valid_until?("صالح حتى "+q.valid_until):"بدون تاريخ انتهاء"} · {q.status==="approved"?"معتمد":q.status==="sent"?"مرسل":q.status==="rejected"?"مرفوض":q.status==="expired"?"منتهي":"مسودة"}</small></div>
+            {(currentUser?.role==="admin"||currentUser?.role==="manager")&&<select aria-label="حالة عرض السعر" value={q.status} onChange={e=>changeQuoteStatus(q.id,e.target.value)}><option value="draft">مسودة</option><option value="sent">مرسل</option><option value="approved">معتمد</option><option value="rejected">مرفوض</option><option value="expired">منتهي</option></select>}
+          </article>)}{quotes.length===0&&<div className="empty-state">لا توجد عروض أسعار بعد.</div>}</div></section>}
         {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المشاريع</h2><p>أنشئ مشاريع الفريق وتابع حالتها ومواعيدها.</p><form className="task-create" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="اكتب اسم المشروع الجديد..." required maxLength={180}/><button disabled={projectBusy}>{projectBusy ? "جارٍ الحفظ..." : "إضافة مشروع"}</button></form>{projectError && <div className="auth-error">{projectError}</div>}<div className="task-list">{projects.map(project=><article className="task-row" key={project.id}><div><strong>{project.name}</strong><small>{project.status === "completed" ? "مكتمل" : project.status === "on_hold" ? "متوقف مؤقتاً" : project.status === "cancelled" ? "ملغي" : "نشط"}</small></div><select aria-label="حالة المشروع" value={project.status} onChange={e=>changeProjectStatus(project.id,e.target.value)}><option value="active">نشط</option><option value="on_hold">متوقف مؤقتاً</option><option value="completed">مكتمل</option><option value="cancelled">ملغي</option></select></article>)}{projects.length===0 && <div className="empty-state">لا توجد مشاريع بعد. أضف أول مشروع.</div>}</div><div className="section-kicker" style={{marginTop:32}}>المهام</div><p>أنشئ مهام الفريق وتابع سير تنفيذها.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
 
         <section className="welcome-row">
