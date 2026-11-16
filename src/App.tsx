@@ -105,6 +105,26 @@ export default function App() {
     try { const response=await fetch(`/api/quotes/${id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({status})}); const data=await response.json(); if(!response.ok)throw new Error(data.error||"تعذر تحديث العرض"); setQuotes(current=>current.map(q=>q.id===id?{...q,status:data.quote.status}:q)); }
     catch(error){setQuoteError(error instanceof Error?error.message:"تعذر تحديث حالة العرض");}
   };
+  const createEmployee=async(event:React.FormEvent<HTMLFormElement>)=>{
+    event.preventDefault();if(!token)return;setHrBusy(true);setHrError("");
+    try{const r=await fetch("/api/hr/employees",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({...employeeForm,hire_date:employeeForm.hire_date||undefined})});const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر إضافة الموظف");setEmployees(v=>[d.employee,...v]);setEmployeeForm({full_name:"",email:"",phone:"",department:"",job_title:"",hire_date:""});}
+    catch(e){setHrError(e instanceof Error?e.message:"تعذر إضافة الموظف");}finally{setHrBusy(false);}
+  };
+  const createLeave=async(event:React.FormEvent<HTMLFormElement>)=>{
+    event.preventDefault();if(!token)return;setHrBusy(true);setHrError("");
+    try{const r=await fetch("/api/hr/leaves",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify(leaveForm)});const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر إرسال الطلب");setLeaves(v=>[d.leave,...v]);setLeaveForm({leave_type:"annual",start_date:"",end_date:"",reason:""});}
+    catch(e){setHrError(e instanceof Error?e.message:"تعذر إرسال الطلب");}finally{setHrBusy(false);}
+  };
+  const decideLeave=async(id:string,status:"approved"|"rejected")=>{
+    if(!token)return;setHrError("");
+    try{const r=await fetch("/api/hr/leaves/"+id+"/status",{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({status})});const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحديث الطلب");setLeaves(v=>v.map(x=>x.id===id?{...x,status:d.leave.status}:x));}
+    catch(e){setHrError(e instanceof Error?e.message:"تعذر تحديث الطلب");}
+  };
+  const changeEmployeeStatus=async(id:string,status:string)=>{
+    if(!token)return;setHrError("");
+    try{const r=await fetch("/api/hr/employees/"+id+"/status",{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({status})});const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحديث حالة الموظف");setEmployees(v=>v.map(x=>x.id===id?{...x,status:d.employee.status}:x));}
+    catch(e){setHrError(e instanceof Error?e.message:"تعذر تحديث حالة الموظف");}
+  };
   const createTask = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); if (!token || !taskTitle.trim()) return; setTaskBusy(true); setTaskError("");
     try { const response = await fetch("/api/tasks", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({title:taskTitle.trim()}) }); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر إنشاء المهمة"); setTasks(current=>[data.task,...current]); setTaskTitle(""); }
@@ -229,6 +249,31 @@ export default function App() {
           <div className="task-list">{quotes.map(q=><article className="task-row" key={q.id}><div><strong>{q.quote_number} · {q.client_name}</strong><small>{q.items?.map(i=>i.description).join("، ")} · قبل الضريبة: {Number(q.subtotal).toLocaleString("ar-SA")} ر.س · الضريبة: {Number(q.tax_amount).toLocaleString("ar-SA")} ر.س · الإجمالي: <b>{Number(q.total).toLocaleString("ar-SA")} ر.س</b></small><small>{q.valid_until?("صالح حتى "+q.valid_until):"بدون تاريخ انتهاء"} · {q.status==="approved"?"معتمد":q.status==="sent"?"مرسل":q.status==="rejected"?"مرفوض":q.status==="expired"?"منتهي":"مسودة"}</small></div>
             {(currentUser?.role==="admin"||currentUser?.role==="manager")&&<select aria-label="حالة عرض السعر" value={q.status} onChange={e=>changeQuoteStatus(q.id,e.target.value)}><option value="draft">مسودة</option><option value="sent">مرسل</option><option value="approved">معتمد</option><option value="rejected">مرفوض</option><option value="expired">منتهي</option></select>}
           </article>)}{quotes.length===0&&<div className="empty-state">لا توجد عروض أسعار بعد.</div>}</div></section>}
+        {activeNav === "hr" && <section className="tasks-panel"><div className="section-kicker">إدارة الأفراد</div><h2>الموارد البشرية</h2><p>دليل الموظفين وطلبات الإجازة مع اعتماد المدير.</p>
+          {hrError&&<div className="auth-error">{hrError}</div>}
+          {(currentUser?.role==="admin"||currentUser?.role==="manager")&&<>
+            <h3>إضافة موظف</h3><form className="task-create" onSubmit={createEmployee} style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:10}}>
+              <input placeholder="اسم الموظف" required minLength={2} value={employeeForm.full_name} onChange={e=>setEmployeeForm(v=>({...v,full_name:e.target.value}))}/>
+              <input type="email" placeholder="البريد الإلكتروني" value={employeeForm.email} onChange={e=>setEmployeeForm(v=>({...v,email:e.target.value}))}/>
+              <input placeholder="رقم الجوال" value={employeeForm.phone} onChange={e=>setEmployeeForm(v=>({...v,phone:e.target.value}))}/>
+              <input placeholder="القسم" value={employeeForm.department} onChange={e=>setEmployeeForm(v=>({...v,department:e.target.value}))}/>
+              <input placeholder="المسمى الوظيفي" value={employeeForm.job_title} onChange={e=>setEmployeeForm(v=>({...v,job_title:e.target.value}))}/>
+              <input type="date" aria-label="تاريخ التعيين" value={employeeForm.hire_date} onChange={e=>setEmployeeForm(v=>({...v,hire_date:e.target.value}))}/>
+              <button disabled={hrBusy}>إضافة إلى سجل الموظفين</button>
+            </form>
+            <div className="task-list">{employees.map(e=><article className="task-row" key={e.id}><div><strong>{e.employee_number} · {e.full_name}</strong><small>{[e.job_title,e.department,e.email].filter(Boolean).join(" · ")}</small></div><select aria-label="حالة الموظف" value={e.status} onChange={event=>changeEmployeeStatus(e.id,event.target.value)}><option value="active">على رأس العمل</option><option value="on_leave">إجازة</option><option value="suspended">موقوف</option><option value="terminated">منتهي الخدمة</option></select></article>)}{employees.length===0&&<div className="empty-state">لا يوجد موظفون مسجلون.</div>}</div>
+          </>}
+          <div className="section-kicker" style={{marginTop:28}}>طلبات الإجازة</div><form className="task-create" onSubmit={createLeave} style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))",gap:10}}>
+            <select value={leaveForm.leave_type} onChange={e=>setLeaveForm(v=>({...v,leave_type:e.target.value}))}><option value="annual">سنوية</option><option value="sick">مرضية</option><option value="emergency">اضطرارية</option><option value="unpaid">بدون راتب</option><option value="other">أخرى</option></select>
+            <input type="date" required aria-label="من تاريخ" value={leaveForm.start_date} onChange={e=>setLeaveForm(v=>({...v,start_date:e.target.value}))}/>
+            <input type="date" required aria-label="إلى تاريخ" value={leaveForm.end_date} onChange={e=>setLeaveForm(v=>({...v,end_date:e.target.value}))}/>
+            <input placeholder="السبب (اختياري)" value={leaveForm.reason} onChange={e=>setLeaveForm(v=>({...v,reason:e.target.value}))}/>
+            <button disabled={hrBusy||!leaveForm.start_date||!leaveForm.end_date}>إرسال طلب الإجازة</button>
+          </form>
+          <div className="task-list">{leaves.map(l=><article className="task-row" key={l.id}><div><strong>{l.requester_name||"طلب إجازة"} · {l.leave_type==="annual"?"سنوية":l.leave_type==="sick"?"مرضية":l.leave_type==="emergency"?"اضطرارية":l.leave_type==="unpaid"?"بدون راتب":"أخرى"}</strong><small>{l.start_date} — {l.end_date}{l.reason?" · "+l.reason:""}</small><small>{l.status==="approved"?"معتمد":l.status==="rejected"?"مرفوض":"بانتظار الاعتماد"}</small></div>
+            {(currentUser?.role==="admin"||currentUser?.role==="manager")&&l.status==="pending"&&<div style={{display:"flex",gap:6}}><button type="button" onClick={()=>decideLeave(l.id,"approved")}>اعتماد</button><button type="button" onClick={()=>decideLeave(l.id,"rejected")}>رفض</button></div>}
+          </article>)}{leaves.length===0&&<div className="empty-state">لا توجد طلبات إجازة.</div>}</div>
+        </section>}
         {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المشاريع</h2><p>أنشئ مشاريع الفريق وتابع حالتها ومواعيدها.</p><form className="task-create" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="اكتب اسم المشروع الجديد..." required maxLength={180}/><button disabled={projectBusy}>{projectBusy ? "جارٍ الحفظ..." : "إضافة مشروع"}</button></form>{projectError && <div className="auth-error">{projectError}</div>}<div className="task-list">{projects.map(project=><article className="task-row" key={project.id}><div><strong>{project.name}</strong><small>{project.status === "completed" ? "مكتمل" : project.status === "on_hold" ? "متوقف مؤقتاً" : project.status === "cancelled" ? "ملغي" : "نشط"}</small></div><select aria-label="حالة المشروع" value={project.status} onChange={e=>changeProjectStatus(project.id,e.target.value)}><option value="active">نشط</option><option value="on_hold">متوقف مؤقتاً</option><option value="completed">مكتمل</option><option value="cancelled">ملغي</option></select></article>)}{projects.length===0 && <div className="empty-state">لا توجد مشاريع بعد. أضف أول مشروع.</div>}</div><div className="section-kicker" style={{marginTop:32}}>المهام</div><p>أنشئ مهام الفريق وتابع سير تنفيذها.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
 
         <section className="welcome-row">
