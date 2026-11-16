@@ -22,7 +22,8 @@ $migrations = @(
   "018_sales_cost_accounting.sql",
   "019_customer_credit_refunds.sql",
   "020_supplier_payments.sql",
-  "021_zatca_connection_settings.sql"
+  "021_zatca_connection_settings.sql",
+  "022_payroll_accounting.sql"
 )
 foreach ($migration in $migrations) {
   $file = Join-Path $root "database/init/$migration"
@@ -31,4 +32,4 @@ foreach ($migration in $migrations) {
   & psql "$env:DATABASE_URL" --set ON_ERROR_STOP=1 --file "$file"
   if ($LASTEXITCODE -ne 0) { throw "Migration failed: $migration. Stop here; do not skip it." }
 }
-Write-Host "All 21 migrations applied successfully."
+Write-Host "All 22 migrations applied successfully."
