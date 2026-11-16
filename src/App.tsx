@@ -1,0 +1,104 @@
+import { useMemo, useState } from "react";
+import {
+  Activity, ArrowLeft, Bell, BriefcaseBusiness, Building2, CalendarDays,
+  Check, ChevronDown, CircleHelp, Clock3, FileCheck2, FileText, FolderKanban,
+  Globe2, KeyRound, LayoutDashboard, Menu, Search, Settings2, ShieldCheck,
+  Users, X, Zap
+} from "lucide-react";
+
+type Module = {
+  id: string;
+  title: string;
+  description: string;
+  icon: typeof FolderKanban;
+  color: string;
+  bg: string;
+  status: "active" | "planned";
+  label: string;
+};
+
+const modules: Module[] = [
+  { id: "projects", title: "المهام والمشاريع", description: "تابع المشاريع والمهام وسير العمل من مكان واحد.", icon: FolderKanban, color: "blue", bg: "blue-bg", status: "active", label: "متاح" },
+  { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "active", label: "متاح" },
+  { id: "hr", title: "الموارد البشرية", description: "ملفات الموظفين والإجازات والحضور.", icon: Users, color: "green", bg: "green-bg", status: "planned", label: "قريباً" },
+  { id: "documents", title: "المسودات والمستندات", description: "إنشاء المستندات ومراجعتها واعتمادها وأرشفتها.", icon: FileCheck2, color: "purple", bg: "purple-bg", status: "planned", label: "قريباً" },
+  { id: "admin", title: "الخدمات الإدارية", description: "الطلبات الداخلية والموافقات والعهد والمشتريات.", icon: Building2, color: "orange", bg: "orange-bg", status: "planned", label: "قريباً" },
+  { id: "vault", title: "خزنة كلمات المرور", description: "إدارة أسرار الشركة والخزن الشخصية بصلاحيات دقيقة.", icon: KeyRound, color: "navy", bg: "navy-bg", status: "planned", label: "مرحلة لاحقة" },
+];
+
+function Brand() {
+  return <div className="brand">
+    <div className="brand-mark"><span>S</span></div>
+    <div className="brand-copy"><strong>SUHOOL <i>TECH</i></strong><small>سهول تيك</small></div>
+  </div>;
+}
+
+export default function App() {
+  const [activeNav, setActiveNav] = useState("overview");
+  const [query, setQuery] = useState("");
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [language, setLanguage] = useState<"ar" | "en">("ar");
+  const filtered = useMemo(() => modules.filter((m) => m.title.includes(query.trim())), [query]);
+  const isArabic = language === "ar";
+
+  return <div className={`app-shell ${isArabic ? "rtl" : "ltr"}`} dir={isArabic ? "rtl" : "ltr"}>
+    {mobileOpen && <button className="mobile-scrim" aria-label="إغلاق القائمة" onClick={() => setMobileOpen(false)} />}
+    <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
+      <div className="sidebar-top"><Brand /><button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="إغلاق"><X size={19}/></button></div>
+      <div className="workspace"><div className="workspace-icon"><Building2 size={18}/></div><div><b>{isArabic ? "المقر الرئيسي" : "Head Office"}</b><small>{isArabic ? "مساحة عمل الشركة" : "Company workspace"}</small></div><ChevronDown size={15}/></div>
+      <div className="nav-label">{isArabic ? "القائمة الرئيسية" : "MAIN MENU"}</div>
+      <nav className="nav-list">
+        <button className={activeNav === "overview" ? "nav-item selected" : "nav-item"} onClick={() => setActiveNav("overview")}><LayoutDashboard size={19}/><span>{isArabic ? "نظرة عامة" : "Overview"}</span></button>
+        <button className="nav-item" onClick={() => setActiveNav("activity")}><Activity size={19}/><span>{isArabic ? "النشاطات" : "Activity"}</span></button>
+        <button className="nav-item" onClick={() => setActiveNav("calendar")}><CalendarDays size={19}/><span>{isArabic ? "التقويم" : "Calendar"}</span></button>
+      </nav>
+      <div className="nav-label systems-label">{isArabic ? "أنظمة الشركة" : "WORKSPACE"}</div>
+      <nav className="nav-list">
+        {modules.filter(m => m.status === "active").map(m => <button className="nav-item" key={m.id} onClick={() => setActiveNav(m.id)}><m.icon size={19}/><span>{m.title}</span><span className="nav-dot"/></button>)}
+      </nav>
+      <div className="sidebar-spacer"/>
+      <div className="help-card"><div className="help-icon"><CircleHelp size={18}/></div><b>{isArabic ? "هل تحتاج إلى مساعدة؟" : "Need some help?"}</b><p>{isArabic ? "فريقنا هنا لمساعدتك في استخدام المنصة." : "Our team is here to help."}</p><button onClick={() => setActiveNav("help")}>{isArabic ? "مركز المساعدة" : "Help center"} <ArrowLeft size={14}/></button></div>
+      <button className="nav-item settings-link" onClick={() => setActiveNav("settings")}><Settings2 size={19}/><span>{isArabic ? "الإعدادات" : "Settings"}</span></button>
+      <div className="sidebar-footer"><span className="online-dot"/> {isArabic ? "جميع الأنظمة تعمل بشكل طبيعي" : "All systems operational"}</div>
+    </aside>
+
+    <main className="main-area">
+      <header className="topbar">
+        <div className="topbar-start"><button className="icon-button menu-toggle" onClick={() => setMobileOpen(true)} aria-label="فتح القائمة"><Menu size={21}/></button><div className="breadcrumb"><span>{isArabic ? "الرئيسية" : "Home"}</span><b>/</b><strong>{isArabic ? "نظرة عامة" : "Overview"}</strong></div></div>
+        <div className="topbar-actions">
+          <label className="search-box"><Search size={17}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder={isArabic ? "ابحث عن نظام..." : "Search systems..."}/><kbd>⌘ K</kbd></label>
+          <button className="language-button" onClick={() => setLanguage(isArabic ? "en" : "ar")}><Globe2 size={17}/>{isArabic ? "EN" : "عربي"}</button>
+          <button className="icon-button notification-button" aria-label="الإشعارات"><Bell size={19}/><i/></button>
+          <div className="user-avatar">م</div>
+        </div>
+      </header>
+
+      <div className="page-content">
+        <section className="welcome-row">
+          <div><div className="eyebrow"><span className="eyebrow-line"/> {isArabic ? "بوابة الأنظمة المتكاملة" : "INTEGRATED WORKSPACE"}</div><h1>{isArabic ? "مرحباً بك في سهول تيك" : "Welcome to Suhool Tech"}<span className="wave">✦</span></h1><p>{isArabic ? "مساحة عملك الرقمية، كل أدواتك وأنظمتك في مكان واحد." : "Your digital workspace, with all your tools in one place."}</p></div>
+          <div className="date-chip"><CalendarDays size={16}/><span>{new Intl.DateTimeFormat(isArabic ? "ar-SA" : "en-US", { dateStyle: "full" }).format(new Date())}</span></div>
+        </section>
+
+        <section className="hero-banner">
+          <div className="hero-orb orb-one"/><div className="hero-orb orb-two"/>
+          <div className="hero-content"><div className="hero-tag"><Zap size={13}/>{isArabic ? "منصة واحدة. إمكانيات متعددة." : "ONE PLATFORM. MANY POSSIBILITIES."}</div><h2>{isArabic ? <>إنجاز أعمالك،<br/><em>بكل سهولة.</em></> : <>Work smarter,<br/><em>achieve more.</em></>}</h2><p>{isArabic ? "انطلق إلى أنظمة شركتك وأدر أعمالك اليومية من بوابة موحدة مصممة لتسهيل إنجازك." : "Access your company systems and manage daily work from one unified portal."}</p><button className="hero-button" onClick={() => document.getElementById("systems")?.scrollIntoView({ behavior: "smooth" })}>{isArabic ? "استكشف الأنظمة" : "Explore systems"} <ArrowLeft size={16}/></button></div>
+          <div className="hero-art" aria-hidden="true"><div className="art-ring ring-a"/><div className="art-ring ring-b"/><div className="art-core"><span>S</span></div><div className="float-card card-a"><FolderKanban size={18}/><span>{isArabic ? "إدارة المشاريع" : "Projects"}</span><Check size={15}/></div><div className="float-card card-b"><ShieldCheck size={18}/><span>{isArabic ? "بيئة عمل موحدة" : "Unified workspace"}</span></div></div>
+        </section>
+
+        <section className="stats-grid">
+          <div className="stat-card"><div className="stat-icon blue-bg"><LayoutDashboard size={19}/></div><div><span>{isArabic ? "الأنظمة المتاحة" : "Available systems"}</span><strong>2 <small>{isArabic ? "أنظمة" : "systems"}</small></strong></div><div className="stat-decoration blue-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon teal-bg"><Zap size={19}/></div><div><span>{isArabic ? "أنظمة قيد التخطيط" : "Planned systems"}</span><strong>4 <small>{isArabic ? "أنظمة" : "systems"}</small></strong></div><div className="stat-decoration teal-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon green-bg"><ShieldCheck size={19}/></div><div><span>{isArabic ? "حالة المنصة" : "Platform status"}</span><strong className="healthy">{isArabic ? "جاهزة للتطوير" : "In setup"}</strong></div><div className="stat-decoration green-decoration"/></div>
+        </section>
+
+        <section className="systems-section" id="systems">
+          <div className="section-heading"><div><div className="section-kicker">{isArabic ? "مساحة العمل" : "YOUR WORKSPACE"}</div><h2>{isArabic ? "أنظمة الشركة" : "Company systems"}</h2><p>{isArabic ? "اختر النظام الذي تريد العمل عليه." : "Choose a system to get started."}</p></div><button className="view-all" onClick={() => setQuery("")}>{isArabic ? "عرض الكل" : "View all"} <ArrowLeft size={15}/></button></div>
+          <div className="modules-grid">{filtered.map((m) => <article className={`module-card ${m.status === "planned" ? "module-planned" : ""}`} key={m.id}><div className="module-card-top"><div className={`module-icon ${m.bg} `}><m.icon size={22}/></div><span className={`status-pill ${m.status}`}><i/>{m.label}</span></div><h3>{m.title}</h3><p>{m.description}</p><div className="module-card-bottom"><span>{m.status === "active" ? (isArabic ? "الدخول إلى النظام" : "Open system") : (isArabic ? "ضمن خارطة التطوير" : "On roadmap")}</span>{m.status === "active" ? <button aria-label={`فتح ${m.title}`} onClick={() => setActiveNav(m.id)}><ArrowLeft size={17}/></button> : <span className="lock-label"><Clock3 size={14}/>{isArabic ? "لاحقاً" : "Later"}</span>}</div></article>)}</div>
+          {filtered.length === 0 && <div className="empty-state">{isArabic ? "لا توجد أنظمة تطابق بحثك." : "No systems match your search."}</div>}
+        </section>
+
+        <footer className="page-footer"><div><Brand/><span className="footer-copy">© {new Date().getFullYear()} Suhool Tech. {isArabic ? "جميع الحقوق محفوظة." : "All rights reserved."}</span></div><span>{isArabic ? "صُنع لتمكين أعمالك" : "Built to empower your work"} <span className="footer-heart">◆</span></span></footer>
+      </div>
+    </main>
+  </div>;
+}
