@@ -8,6 +8,7 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
  const [form,setForm]=useState({party_id:"",issue_date:new Date().toISOString().slice(0,10),due_date:"",warehouse_id:"",item_id:"",description:"",quantity:"1",unit_price:"0",tax_rate:"15",discount_amount:"0"});
  const [posting,setPosting]=useState({invoice_id:"",receivable_account_id:"",revenue_account_id:"",output_tax_account_id:""});
  const [receipt,setReceipt]=useState({invoice_id:"",amount:"",payment_method:"bank_transfer",payment_account_id:"",reference_number:""});
+ const [statementCustomer,setStatementCustomer]=useState(""),[statementFrom,setStatementFrom]=useState(""),[statementTo,setStatementTo]=useState(""),[statement,setStatement]=useState<Row|null>(null);
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
  const load=useCallback(async()=>{
   if(!token)return;
@@ -65,6 +66,14 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
     <button disabled={busy||!invoices.some(x=>["issued","partially_paid"].includes(x.status))}>حفظ سند القبض وترحيل القيد</button>
    </form>
   </>}
+  <h3>كشف حساب العميل</h3>
+  <form className="task-create" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}} onSubmit={async e=>{e.preventDefault();setError("");setStatement(null);try{const qs=new URLSearchParams();if(statementFrom)qs.set("from",statementFrom);if(statementTo)qs.set("to",statementTo);const r=await fetch("/api/finance/parties/"+statementCustomer+"/statement?"+qs.toString(),{headers});const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل كشف الحساب");setStatement(d);}catch(err){setError(err instanceof Error?err.message:"تعذر تحميل كشف الحساب");}}}>
+   <select required value={statementCustomer} onChange={e=>setStatementCustomer(e.target.value)}><option value="">اختر العميل</option>{parties.map(x=><option key={x.id} value={x.id}>{x.name}</option>)}</select>
+   <input type="date" aria-label="من تاريخ" value={statementFrom} onChange={e=>setStatementFrom(e.target.value)}/>
+   <input type="date" aria-label="إلى تاريخ" value={statementTo} onChange={e=>setStatementTo(e.target.value)}/>
+   <button disabled={!statementCustomer}>عرض كشف الحساب</button>
+  </form>
+  {statement&&<><div className="task-row"><strong>{statement.party?.name} · رصيد افتتاحي {Number(statement.opening_balance||0).toLocaleString("ar-SA")} ر.س · رصيد ختامي {Number(statement.closing_balance||0).toLocaleString("ar-SA")} ر.س</strong></div><div className="task-list">{(statement.transactions||[]).map((x:Row)=><article className="task-row" key={x.id}><div><strong>{x.reference} · {x.description}</strong><small>{String(x.transaction_date).slice(0,10)} · مدين {Number(x.debit).toFixed(2)} · دائن {Number(x.credit).toFixed(2)} · الرصيد {Number(x.running_balance).toFixed(2)} ر.س</small></div></article>)}{!statement.transactions?.length&&<div className="empty-state">لا توجد حركات خلال الفترة المحددة.</div>}</div></>}
   <h3>سجل سندات القبض</h3><div className="task-list">{receipts.map(x=><article className="task-row" key={x.id}><div><strong>{x.receipt_number} · {x.customer_name||"عميل"}</strong><small>{x.invoice_number||"بدون فاتورة"} · {Number(x.amount).toLocaleString("ar-SA")} ر.س · {x.payment_method==="cash"?"نقدي":x.payment_method==="bank_transfer"?"تحويل بنكي":x.payment_method==="card"?"بطاقة":"أخرى"}</small><small>{x.entry_number?"القيد "+x.entry_number:"قيد محاسبي مرتبط"}</small></div></article>)}{!receipts.length&&<div className="empty-state">لا توجد سندات قبض.</div>}</div>
   <button className="secondary-button" disabled={busy} onClick={()=>void load()}><RefreshCw size={16}/> تحديث البيانات</button>
  </section>;
