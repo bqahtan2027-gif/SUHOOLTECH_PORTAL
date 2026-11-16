@@ -23,7 +23,7 @@ export default function Calendar({token,role,userId}:Props){
  const create=async(e:React.FormEvent<HTMLFormElement>)=>{
   e.preventDefault();setBusy(true);setError("");
   try{
-   const r=await fetch("/api/meetings",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({...form,attendee_ids:attendees})});
+   const r=await fetch("/api/meetings",{method:"POST",headers:{"Content-Type":"application/json",Authorization:"Bearer "+token},body:JSON.stringify({...form,starts_at:new Date(form.starts_at).toISOString(),ends_at:new Date(form.ends_at).toISOString(),attendee_ids:attendees})});
    const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر إنشاء الاجتماع");
    setMeetings(v=>[d.meeting,...v].sort((a,b)=>a.starts_at.localeCompare(b.starts_at)));
    setForm(v=>({...v,title:"",description:"",location:""}));setAttendees([]);
