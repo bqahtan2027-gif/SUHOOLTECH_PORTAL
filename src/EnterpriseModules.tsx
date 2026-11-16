@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useState} from "react";
-import {Users,ShoppingCart,Wallet,Wrench,ChartNoAxesCombined,Headset,RefreshCw} from "lucide-react";
+import {RefreshCw} from "lucide-react";
 type Kind="crm"|"procurement"|"payroll"|"assets"|"bi"|"helpdesk";
 type Row=Record<string,any>;
 const titles:Record<Kind,string>={crm:"إدارة العملاء والمبيعات",procurement:"المشتريات وطلبات الشراء",payroll:"مسيرات الرواتب",assets:"الأصول والصيانة",bi:"ذكاء الأعمال والتقارير",helpdesk:"الدعم الفني والبلاغات"};
