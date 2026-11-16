@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "node:crypto";
 import helmet from "helmet";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
@@ -531,6 +532,55 @@ app.patch("/api/admin/custody/:id/status",auth,adminServicesManager,async(req,re
     await audit(req.user.sub,"admin.custody_status_changed","custody_asset",req.params.id,{status:p.data.status});
     res.json({asset:result.rows[0]});
   }catch(error){console.error("custody status failed",error.message);res.status(500).json({error:"تعذر تحديث العهدة"});}
+});
+
+
+function vaultKey() {
+  const key=Buffer.from(process.env.VAULT_ENCRYPTION_KEY||"","base64");
+  if(key.length!==32)throw new Error("VAULT_ENCRYPTION_KEY must be a base64-encoded 32-byte key");
+  return key;
+}
+function encryptVaultSecret(secret) {
+  const iv=crypto.randomBytes(12);
+  const cipher=crypto.createCipheriv("aes-256-gcm",vaultKey(),iv);
+  const ciphertext=Buffer.concat([cipher.update(secret,"utf8"),cipher.final()]);
+  return {ciphertext:ciphertext.toString("base64"),iv:iv.toString("hex"),tag:cipher.getAuthTag().toString("hex")};
+}
+function decryptVaultSecret(row) {
+  const decipher=crypto.createDecipheriv("aes-256-gcm",vaultKey(),Buffer.from(row.secret_iv,"hex"));
+  decipher.setAuthTag(Buffer.from(row.secret_tag,"hex"));
+  return Buffer.concat([decipher.update(Buffer.from(row.secret_ciphertext,"base64")),decipher.final()]).toString("utf8");
+}
+const vaultSchema=z.object({title:z.string().trim().min(2).max(160),username:z.string().max(254).optional(),secret:z.string().min(1).max(4096),notes:z.string().max(2000).optional(),scope:z.enum(["private","shared"]).default("private")});
+app.get("/api/vault",auth,async(req,res)=>{
+ try{
+  const r=await pool.query("select v.id,v.title,v.username,v.notes,v.scope,v.owner_id,v.created_at,v.updated_at,u.full_name as owner_name from vault_items v join users u on u.id=v.owner_id where v.scope='shared' or v.owner_id=$1 order by v.updated_at desc limit 300",[req.user.sub]);
+  res.set("Cache-Control","no-store");res.json({items:r.rows});
+ }catch(error){console.error("vault list failed",error.message);res.status(503).json({error:"تعذر تحميل الخزنة. تحقق من تطبيق تحديث قاعدة البيانات."});}
+});
+app.post("/api/vault",auth,async(req,res)=>{
+ const p=vaultSchema.safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من عنوان السجل والسر"});
+ if(p.data.scope==="shared"&&!["admin","manager"].includes(req.user.role))return res.status(403).json({error:"إنشاء أسرار مشتركة متاح للمدير ومدير النظام"});
+ let encrypted;try{encrypted=encryptVaultSecret(p.data.secret);}catch(error){console.error("vault encryption configuration error",error.message);return res.status(503).json({error:"الخزنة غير مهيأة. يجب ضبط مفتاح التشفير على الخادم أولاً."});}
+ try{
+  const r=await pool.query("insert into vault_items(title,username,secret_ciphertext,secret_iv,secret_tag,notes,scope,owner_id) values($1,$2,$3,$4,$5,$6,$7,$8) returning id,title,username,notes,scope,owner_id,created_at,updated_at",[p.data.title,p.data.username||null,encrypted.ciphertext,encrypted.iv,encrypted.tag,p.data.notes||null,p.data.scope,req.user.sub]);
+  await audit(req.user.sub,"vault.secret_created","vault_item",r.rows[0].id,{scope:p.data.scope});res.status(201).json({item:{...r.rows[0],owner_name:"أنت"}});
+ }catch(error){console.error("vault create failed",error.message);res.status(500).json({error:"تعذر حفظ السر المشفر"});}
+});
+app.get("/api/vault/:id/reveal",auth,rateLimit({windowMs:60000,limit:30,standardHeaders:true,legacyHeaders:false}),async(req,res)=>{
+ try{
+  const r=await pool.query("select v.* from vault_items v where v.id=$1 and (v.scope='shared' or v.owner_id=$2)",[req.params.id,req.user.sub]);
+  if(!r.rowCount)return res.status(404).json({error:"السجل غير موجود أو لا تملك صلاحية عرضه"});
+  const secret=decryptVaultSecret(r.rows[0]);await audit(req.user.sub,"vault.secret_revealed","vault_item",req.params.id,{scope:r.rows[0].scope});
+  res.set("Cache-Control","no-store");res.set("Pragma","no-cache");res.json({secret});
+ }catch(error){console.error("vault reveal failed",error.message);res.status(503).json({error:"تعذر فك تشفير السر. تحقق من مفتاح الخزنة."});}
+});
+app.delete("/api/vault/:id",auth,async(req,res)=>{
+ try{
+  const r=await pool.query("delete from vault_items where id=$1 and ((scope='private' and owner_id=$2) or (scope='shared' and $3 in ('admin','manager'))) returning id,scope",[req.params.id,req.user.sub,req.user.role]);
+  if(!r.rowCount)return res.status(404).json({error:"السجل غير موجود أو لا تملك صلاحية حذفه"});
+  await audit(req.user.sub,"vault.secret_deleted","vault_item",req.params.id,{scope:r.rows[0].scope});res.json({deleted:true});
+ }catch(error){console.error("vault delete failed",error.message);res.status(500).json({error:"تعذر حذف السجل"});}
 });
 
 async function audit(actorId, action, entityType, entityId, metadata = {}) {
