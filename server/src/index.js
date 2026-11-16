@@ -261,6 +261,79 @@ app.patch("/api/tasks/:id/status", auth, async (req, res) => {
   res.json({ task: r.rows[0] });
 });
 
+
+const documentManager = (req, res, next) => {
+  if (![ "admin", "manager" ].includes(req.user.role)) return res.status(403).json({ error: "إدارة دورة اعتماد المستندات متاحة للمدير ومدير النظام" });
+  next();
+};
+const documentSchema = z.object({
+  title: z.string().trim().min(3).max(200),
+  document_type: z.enum(["contract","policy","letter","nda","other"]),
+  party_name: z.string().trim().max(180).optional(),
+  content: z.string().min(1).max(30000)
+});
+app.get("/api/documents", auth, async (req, res) => {
+  try {
+    const manager = ["admin","manager"].includes(req.user.role);
+    const sql = manager
+      ? "select id,document_number,title,document_type,party_name,content,status,created_at,updated_at from documents order by created_at desc limit 300"
+      : "select id,document_number,title,document_type,party_name,content,status,created_at,updated_at from documents where created_by=$1 order by created_at desc limit 100";
+    const result = await pool.query(sql, manager ? [] : [req.user.sub]);
+    res.json({ documents: result.rows });
+  } catch (error) {
+    console.error("documents list failed", error.message);
+    res.status(503).json({ error: "تعذر تحميل المستندات. تحقق من تطبيق تحديث قاعدة البيانات." });
+  }
+});
+app.post("/api/documents", auth, async (req, res) => {
+  const parsed = documentSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "تحقق من عنوان المستند ونوعه ومحتواه" });
+  try {
+    const number = await pool.query("select nextval('document_number_seq') as n");
+    const documentNumber = `DOC-${new Date().getFullYear()}-${String(number.rows[0].n).padStart(6,"0")}`;
+    const result = await pool.query(
+      "insert into documents(document_number,title,document_type,party_name,content,created_by) values($1,$2,$3,$4,$5,$6) returning id,document_number,title,document_type,party_name,content,status,created_at,updated_at",
+      [documentNumber,parsed.data.title,parsed.data.document_type,parsed.data.party_name || null,parsed.data.content,req.user.sub]
+    );
+    await audit(req.user.sub,"document.created","document",result.rows[0].id,{document_number:documentNumber});
+    res.status(201).json({ document: result.rows[0] });
+  } catch (error) {
+    console.error("document create failed", error.message);
+    res.status(500).json({ error: "تعذر إنشاء المستند" });
+  }
+});
+app.patch("/api/documents/:id/status", auth, documentManager, async (req, res) => {
+  const parsed = z.object({status:z.enum(["review","approved","rejected","draft","archived"])}).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({error:"حالة المستند غير صالحة"});
+  const transitions = {
+    draft:["review"], review:["approved","rejected"], rejected:["draft"],
+    approved:["archived"], archived:[]
+  };
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    const current = await client.query("select id,status from documents where id=$1 for update",[req.params.id]);
+    if (!current.rowCount) { await client.query("rollback"); return res.status(404).json({error:"المستند غير موجود"}); }
+    const from = current.rows[0].status;
+    const to = parsed.data.status;
+    if (!transitions[from]?.includes(to)) {
+      await client.query("rollback");
+      return res.status(409).json({error:"لا يمكن تنفيذ هذا الانتقال في دورة اعتماد المستند"});
+    }
+    const updated = await client.query(
+      "update documents set status=$1,updated_at=now(),reviewed_by=case when $1 in ('approved','rejected') then $2 else reviewed_by end,reviewed_at=case when $1 in ('approved','rejected') then now() else reviewed_at end,archived_at=case when $1='archived' then now() else archived_at end where id=$3 returning id,status,updated_at,reviewed_by,reviewed_at,archived_at",
+      [to,req.user.sub,req.params.id]
+    );
+    await client.query("commit");
+    await audit(req.user.sub,"document.status_changed","document",req.params.id,{from,to});
+    res.json({document:updated.rows[0]});
+  } catch(error) {
+    await client.query("rollback");
+    console.error("document status update failed",error.message);
+    res.status(500).json({error:"تعذر تحديث حالة المستند"});
+  } finally { client.release(); }
+});
+
 async function audit(actorId, action, entityType, entityId, metadata = {}) {
   try {
     await pool.query(
