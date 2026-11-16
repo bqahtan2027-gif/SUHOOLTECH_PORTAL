@@ -970,9 +970,11 @@ app.get("/api/finance/parties/:id/statement",auth,async(req,res)=>{
      ('فاتورة مبيعات '||i.invoice_number)::text as description,i.total::numeric(16,2) as debit,0::numeric(16,2) as credit
     from sales_invoices i where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and i.issue_date between $2::date and $3::date
     union all
-    select r.id,'receipt'::text,r.receipt_number,r.received_at::date,('سند قبض '||r.receipt_number)::text,
-     0::numeric(16,2),r.amount::numeric(16,2)
-    from finance_receipts r join sales_invoices i on i.id=r.invoice_id
+    select a.id,'receipt'::text,r.receipt_number,r.received_at::date,('سند قبض '||r.receipt_number)::text,
+     0::numeric(16,2),a.amount::numeric(16,2)
+    from sales_receipt_allocations a
+    join finance_receipts r on r.id=a.receipt_id
+    join sales_invoices i on i.id=a.invoice_id
     where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and r.received_at::date between $2::date and $3::date
    ) ledger order by transaction_date,transaction_type,reference`,[req.params.id,from,to]);
   let balance=Number(opening.rows[0].balance);
