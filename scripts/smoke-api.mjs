@@ -108,6 +108,52 @@ try {
     }
   });
   assert.equal(unbalanced.status, 400, "unbalanced journals must be rejected");
+  const payrollExpense = await request("/api/finance/accounts", {
+    method: "POST", token, body: { account_code: "CI-5100", account_name: "CI Payroll Expense", account_type: "expense" }
+  });
+  const payrollPayable = await request("/api/finance/accounts", {
+    method: "POST", token, body: { account_code: "CI-2100", account_name: "CI Payroll Payable", account_type: "liability" }
+  });
+  const payrollDeductions = await request("/api/finance/accounts", {
+    method: "POST", token, body: { account_code: "CI-2110", account_name: "CI Payroll Deductions", account_type: "liability" }
+  });
+  assert.equal(payrollExpense.status, 201, JSON.stringify(payrollExpense.data));
+  assert.equal(payrollPayable.status, 201, JSON.stringify(payrollPayable.data));
+  assert.equal(payrollDeductions.status, 201, JSON.stringify(payrollDeductions.data));
+
+  const employee = await request("/api/hr/employees", {
+    method: "POST", token, body: { full_name: "CI Payroll Employee", department: "QA", job_title: "Tester" }
+  });
+  assert.equal(employee.status, 201, JSON.stringify(employee.data));
+
+  const payroll = await request("/api/payroll/runs", {
+    method: "POST", token, body: {
+      period_start: "2026-01-01", period_end: "2026-01-31",
+      items: [{ employee_id: employee.data.employee.id, basic_salary: 1000, allowances: 200, deductions: 100 }]
+    }
+  });
+  assert.equal(payroll.status, 201, JSON.stringify(payroll.data));
+  const approvedPayroll = await request("/api/payroll/runs/" + payroll.data.run.id + "/approve", { method: "PATCH", token });
+  assert.equal(approvedPayroll.status, 200, JSON.stringify(approvedPayroll.data));
+
+  const payrollPost = await request("/api/payroll/runs/" + payroll.data.run.id + "/post", {
+    method: "POST", token, body: {
+      expense_account_id: payrollExpense.data.account.id,
+      payable_account_id: payrollPayable.data.account.id,
+      deductions_account_id: payrollDeductions.data.account.id
+    }
+  });
+  assert.equal(payrollPost.status, 200, JSON.stringify(payrollPost.data));
+  assert.ok(payrollPost.data.run.journal_entry_id, "payroll posting must link its journal");
+  const payrollPayment = await request("/api/payroll/runs/" + payroll.data.run.id + "/pay", {
+    method: "POST", token, body: { payment_account_id: assetAccount.data.account.id }
+  });
+  assert.equal(payrollPayment.status, 200, JSON.stringify(payrollPayment.data));
+  assert.equal(payrollPayment.data.run.status, "paid");
+  const duplicatePayrollPayment = await request("/api/payroll/runs/" + payroll.data.run.id + "/pay", {
+    method: "POST", token, body: { payment_account_id: assetAccount.data.account.id }
+  });
+  assert.equal(duplicatePayrollPayment.status, 409, "a payroll run must not be paid twice");
 
   const warehouse = await request("/api/inventory/warehouses", {
     method: "POST", token, body: { warehouse_code: "CI-WH", name: "CI Warehouse" }
@@ -149,7 +195,7 @@ try {
   assert.equal(zatca.status, 200, JSON.stringify(zatca.data));
   assert.equal(zatca.data.settings.integration_mode, "manual");
 
-  console.log("API smoke tests passed: auth, one-time bootstrap, projects, balanced GL, stock controls, and ZATCA settings.");
+  console.log("API smoke tests passed: auth, one-time bootstrap, projects, balanced GL, stock controls, payroll posting/payment, and ZATCA settings.");
 } catch (error) {
   console.error(error);
   console.error(logs);
