@@ -178,6 +178,68 @@ app.patch("/api/quotes/:id/status", auth, quoteWriter, async (req, res) => {
   }
 });
 
+
+const hrManager = (req, res, next) => {
+  if (!["admin", "manager"].includes(req.user.role)) return res.status(403).json({ error: "هذه العملية متاحة للمدير ومدير النظام" });
+  next();
+};
+app.get("/api/hr/employees", auth, hrManager, async (_req, res) => {
+  try {
+    const r = await pool.query("select id,employee_number,full_name,email,phone,department,job_title,hire_date,status,created_at from employees order by created_at desc limit 300");
+    res.json({ employees: r.rows });
+  } catch (error) { console.error("employee list failed",error.message); res.status(503).json({error:"تعذر تحميل الموظفين. تحقق من تحديث قاعدة البيانات."}); }
+});
+app.post("/api/hr/employees", auth, hrManager, async (req, res) => {
+  const p=z.object({
+    full_name:z.string().trim().min(2).max(160),email:z.string().email().max(254).optional().or(z.literal("")),
+    phone:z.string().max(40).optional(),department:z.string().max(120).optional(),job_title:z.string().max(120).optional(),
+    hire_date:z.string().date().optional(),user_id:z.string().uuid().optional()
+  }).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"تحقق من بيانات الموظف"});
+  try {
+    const r=await pool.query("insert into employees(employee_number,full_name,email,phone,department,job_title,hire_date,user_id) values('EMP-' || lpad(nextval('employee_number_seq')::text,5,'0'),$1,$2,$3,$4,$5,$6,$7) returning *",
+      [p.data.full_name,p.data.email||null,p.data.phone||null,p.data.department||null,p.data.job_title||null,p.data.hire_date||null,p.data.user_id||null]);
+    await audit(req.user.sub,"hr.employee_created","employee",r.rows[0].id,{employee_number:r.rows[0].employee_number});
+    res.status(201).json({employee:r.rows[0]});
+  } catch(error){console.error("employee create failed",error.message);res.status(error.code==="23505"?409:500).json({error:error.code==="23505"?"البريد أو حساب المستخدم مرتبط بموظف آخر":"تعذر إضافة الموظف"});}
+});
+app.patch("/api/hr/employees/:id/status", auth, hrManager, async (req,res)=>{
+  const p=z.object({status:z.enum(["active","on_leave","suspended","terminated"])}).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"حالة الموظف غير صالحة"});
+  try{const r=await pool.query("update employees set status=$1,updated_at=now() where id=$2 returning id,employee_number,status",[p.data.status,req.params.id]);
+    if(!r.rowCount)return res.status(404).json({error:"الموظف غير موجود"});
+    await audit(req.user.sub,"hr.employee_status_changed","employee",req.params.id,{status:p.data.status});res.json({employee:r.rows[0]});
+  }catch(error){res.status(500).json({error:"تعذر تحديث حالة الموظف"});}
+});
+app.get("/api/hr/leaves", auth, async (req,res)=>{
+  try{
+    const isManager=["admin","manager"].includes(req.user.role);
+    const sql=isManager
+      ? "select l.id,l.leave_type,l.start_date,l.end_date,l.reason,l.status,l.created_at,u.full_name as requester_name from leave_requests l join users u on u.id=l.user_id order by l.created_at desc limit 300"
+      : "select l.id,l.leave_type,l.start_date,l.end_date,l.reason,l.status,l.created_at,u.full_name as requester_name from leave_requests l join users u on u.id=l.user_id where l.user_id=$1 order by l.created_at desc limit 100";
+    const r=await pool.query(sql,isManager?[]:[req.user.sub]);res.json({leaves:r.rows});
+  }catch(error){console.error("leave list failed",error.message);res.status(503).json({error:"تعذر تحميل طلبات الإجازة"});}
+});
+app.post("/api/hr/leaves", auth, async (req,res)=>{
+  const p=z.object({leave_type:z.enum(["annual","sick","unpaid","emergency","other"]),start_date:z.string().date(),end_date:z.string().date(),reason:z.string().max(1000).optional()}).refine(v=>v.end_date>=v.start_date).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"تحقق من نوع الإجازة وتواريخها"});
+  try{
+    const r=await pool.query("insert into leave_requests(user_id,leave_type,start_date,end_date,reason) values($1,$2,$3,$4,$5) returning *",[req.user.sub,p.data.leave_type,p.data.start_date,p.data.end_date,p.data.reason||null]);
+    await audit(req.user.sub,"hr.leave_requested","leave_request",r.rows[0].id,{leave_type:p.data.leave_type});
+    res.status(201).json({leave:r.rows[0]});
+  }catch(error){console.error("leave request failed",error.message);res.status(500).json({error:"تعذر إرسال طلب الإجازة"});}
+});
+app.patch("/api/hr/leaves/:id/status", auth, hrManager, async (req,res)=>{
+  const p=z.object({status:z.enum(["approved","rejected"])}).safeParse(req.body);
+  if(!p.success)return res.status(400).json({error:"قرار الاعتماد غير صالح"});
+  try{
+    const r=await pool.query("update leave_requests set status=$1,reviewed_by=$2,reviewed_at=now() where id=$3 and status='pending' returning id,status",[p.data.status,req.user.sub,req.params.id]);
+    if(!r.rowCount)return res.status(404).json({error:"الطلب غير موجود أو سبق اتخاذ قرار فيه"});
+    await audit(req.user.sub,"hr.leave_"+p.data.status,"leave_request",req.params.id);
+    res.json({leave:r.rows[0]});
+  }catch(error){res.status(500).json({error:"تعذر تحديث طلب الإجازة"});}
+});
+
 app.get("/api/tasks", auth, async (_req, res) => {
   const r = await pool.query("select id,title,description,status,priority,due_date,created_at from tasks order by created_at desc limit 200");
   res.json({ tasks: r.rows });
