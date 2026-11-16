@@ -63,6 +63,7 @@ jobs:
             "016_customer_receipts.sql",
             "017_sales_credit_notes.sql",
             "018_sales_cost_accounting.sql",
+            "019_customer_credit_refunds.sql",
           ];
 
           try {
