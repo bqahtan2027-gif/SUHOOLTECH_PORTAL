@@ -1,4 +1,4 @@
-name: Build
+name: Build and database checks
 on:
   push:
     branches: [main]
@@ -7,6 +7,22 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: suhoooltech_test
+          POSTGRES_USER: suhoooltech_test
+          POSTGRES_PASSWORD: test_only_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U suhoooltech_test -d suhoooltech_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://suhoooltech_test:test_only_password@localhost:5432/suhoooltech_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,3 +36,38 @@ jobs:
         run: npm install --prefix server
       - name: Check API JavaScript syntax
         run: node --check server/src/index.js
+      - name: Apply PostgreSQL migrations twice
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+          import pg from "pg";
+
+          const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+          const migrations = [
+            "001_core.sql",
+            "002_projects_dashboard.sql",
+            "003_quotes.sql",
+            "004_hr.sql",
+            "005_documents.sql",
+            "006_admin_services.sql",
+            "007_calendar.sql",
+            "008_vault.sql",
+          ];
+
+          try {
+            await client.connect();
+            for (let pass = 1; pass <= 2; pass += 1) {
+              for (const migration of migrations) {
+                const sql = await readFile(`database/init/${migration}`, "utf8");
+                await client.query(sql);
+                console.log(`Pass ${pass}: ${migration} OK`);
+              }
+            }
+            const tables = await client.query(
+              "select count(*)::int as count from information_schema.tables where table_schema = 'public' and table_type = 'BASE TABLE'"
+            );
+            console.log(`PostgreSQL migration check complete; public tables: ${tables.rows[0].count}`);
+          } finally {
+            await client.end();
+          }
+          NODE
