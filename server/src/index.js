@@ -812,7 +812,7 @@ app.post("/api/finance/journals/:id/post",auth,financeManager,async(req,res)=>{
 
 // Sales invoices: draft creation, stock issue and balanced GL posting.
 app.get("/api/finance/sales-invoices",auth,async(_req,res)=>{
- try{const r=await pool.query(`select i.*,p.name as customer_name,j.entry_number,s.document_number as stock_document_number,
+ try{const r=await pool.query(`select i.*,p.name as customer_name,j.entry_number,s.document_number as stock_document_number,\n  coalesce((select json_agg(json_build_object('id',l.id,'item_id',l.item_id,'description',l.description,'quantity',l.quantity,'unit_price',l.unit_price) order by l.description) from sales_invoice_lines l where l.invoice_id=i.id),'[]'::json) as lines,
   coalesce((select sum(a.amount) from sales_receipt_allocations a where a.invoice_id=i.id),0)::numeric(16,2) as paid_amount
   from sales_invoices i left join finance_parties p on p.id=i.party_id
   left join journal_entries j on j.id=i.journal_entry_id left join stock_documents s on s.id=i.stock_document_id
