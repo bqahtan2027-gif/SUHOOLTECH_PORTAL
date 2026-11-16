@@ -2,9 +2,9 @@
 
 This is the deployment profile for the W500 shared Windows plan. It does not use Docker, root access, a VM, or a third-party database service.
 
-## Verified plan limits / features
+## Plan capabilities and deployment prerequisites
 
-The provider's current plan comparison lists W500 with Node.js, PostgreSQL (1 GB), one IIS site, and a 256 MB dedicated application pool. Keep the API lightweight and monitor memory and database usage. Provider references:
+The provider's plan information has been used as a planning reference for Node.js, PostgreSQL, IIS and resource limits. Confirm the current limits and that Node.js App is enabled in your own W500 control panel before relying on them. Keep the API lightweight and monitor memory and database usage. Provider references:
 - https://www.mywindowshosting.com/hosting_plans
 - https://www.mywindowshosting.com/nodejs_hosting
 - https://www.mywindowshosting.com/support/kb/a2332/how-to-deploy-node_js-to-our-server-from-a-github-repository.aspx
@@ -42,17 +42,18 @@ The API currently uses the `pg` driver and PostgreSQL parameter syntax. The conn
 
 ## Database initialization
 
-Run these SQL files in order against the newly created PostgreSQL database using the provider's database tool or an approved PostgreSQL client:
-1. `database/init/001_core.sql`
-2. `database/init/002_projects_dashboard.sql`
-3. `database/init/003_quotes.sql`
-4. `database/init/004_hr.sql`
-5. `database/init/005_documents.sql`
-6. `database/init/006_admin_services.sql`
-7. `database/init/007_calendar.sql`
-8. `database/init/008_vault.sql`
+Run all 21 SQL migrations in numeric order. The repository includes a PowerShell runner at `scripts/apply-migrations.ps1`:
+```powershell
+$env:DATABASE_URL = "postgres://USER:PASSWORD@HOST:5432/DATABASE"
+.\\scripts\\apply-migrations.ps1
+```
+Run this from a trusted Windows machine with PostgreSQL client tools (`psql`) installed. Alternatively, execute every `database/init/*.sql` file in ascending numeric order through the provider's PostgreSQL tool. Stop immediately on the first error; do not skip a migration. CI applies all migrations twice to check repeatability. The migrations cover core access/projects, HR, documents, procurement, calendar, encrypted vault, inventory, finance, sales/purchases workflows, and ZATCA connection settings. Confirm the database user can create the `pgcrypto` extension used by migration 001. Do not expose PostgreSQL publicly.
 
-The second migration adds projects and dashboard indexes. The third adds quotes and quote items. The fourth adds the employee directory and leave requests. The fifth adds the documents/contracts register and approval workflow. The sixth adds purchasing and administrative requests, manager approvals, and the company asset custody register. The seventh adds the internal meetings calendar and attendee invitations. The eighth adds encrypted credentials-vault records. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
+## Release package, frontend build and IIS
+
+After a successful push to `main`, GitHub Actions creates a downloadable artifact named `suhooltech-w500-release-<commit-sha>`. It contains `web/` (compiled frontend), `api/` (Express app with production dependencies), `database/init/` (all migrations), and this hosting guide. Download the artifact from the successful workflow run; deploy `web/` to the IIS site root and set the Node.js app root to `api/`. This package is a build artifact, not a database backup and not a live deployment.
+
+For a database backup from a trusted Windows machine with PostgreSQL client tools installed, set `DATABASE_URL` and run `scripts/backup-postgres.ps1`. Store the resulting dump outside the website and GitHub. Test restoration to a separate empty database before production use. Never share the database URI or dump publicly.
 
 ## Frontend build and IIS
 
