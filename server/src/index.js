@@ -183,6 +183,12 @@ const hrManager = (req, res, next) => {
   if (!["admin", "manager"].includes(req.user.role)) return res.status(403).json({ error: "هذه العملية متاحة للمدير ومدير النظام" });
   next();
 };
+app.get("/api/hr/assignable-users", auth, hrManager, async (_req,res)=>{
+  try{
+    const r=await pool.query("select id,full_name,email from users where active=true order by full_name limit 300");
+    res.json({users:r.rows});
+  }catch(error){console.error("assignable users failed",error.message);res.status(503).json({error:"تعذر تحميل حسابات الموظفين"});}
+});
 app.get("/api/hr/employees", auth, hrManager, async (_req, res) => {
   try {
     const r = await pool.query("select id,employee_number,full_name,email,phone,department,job_title,hire_date,status,created_at from employees order by created_at desc limit 300");
