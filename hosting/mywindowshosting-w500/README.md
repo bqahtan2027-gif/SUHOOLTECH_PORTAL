@@ -35,6 +35,7 @@ Set these in the Node.js app environment settings (never in source control):
 - `BOOTSTRAP_TOKEN`: one-time random token of at least 24 characters.
 - `CORS_ORIGIN`: exact public frontend origin, e.g. `https://portal.example.com` (no trailing slash). If same-origin proxying is configured, still use the exact browser origin.
 - `DB_SSL`: set to `true` only if the provider says the PostgreSQL endpoint requires TLS; otherwise `false`.
+- `VAULT_ENCRYPTION_KEY`: a base64-encoded 32-byte random key for AES-256-GCM. Generate it once on a trusted machine with Node.js `crypto.randomBytes(32).toString('base64')`, set it only in the hosting environment settings, and never commit or send it in chat.
 - `PORT`: do not hard-code; let the hosting platform assign it.
 
 The API currently uses the `pg` driver and PostgreSQL parameter syntax. The connection pool is limited to 5 connections to be more conservative on shared hosting.
@@ -49,8 +50,9 @@ Run these SQL files in order against the newly created PostgreSQL database using
 5. `database/init/005_documents.sql`
 6. `database/init/006_admin_services.sql`
 7. `database/init/007_calendar.sql`
+8. `database/init/008_vault.sql`
 
-The second migration adds projects and dashboard indexes. The third adds quotes and quote items. The fourth adds the employee directory and leave requests. The fifth adds the documents/contracts register and approval workflow. The sixth adds purchasing and administrative requests, manager approvals, and the company asset custody register. The seventh adds the internal meetings calendar and attendee invitations. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
+The second migration adds projects and dashboard indexes. The third adds quotes and quote items. The fourth adds the employee directory and leave requests. The fifth adds the documents/contracts register and approval workflow. The sixth adds purchasing and administrative requests, manager approvals, and the company asset custody register. The seventh adds the internal meetings calendar and attendee invitations. The eighth adds encrypted credentials-vault records. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
 
 ## Frontend build and IIS
 
@@ -72,7 +74,7 @@ Do not assume IIS URL Rewrite can proxy to the Node app or that a custom port is
 1. Verify `https://YOUR-API-HOST/api/health` returns status `ok` and database `connected`.
 2. Call `POST /api/auth/bootstrap` once with `token`, `name`, `email`, and a unique password of at least 12 characters.
 3. Immediately remove `BOOTSTRAP_TOKEN` from the app settings and restart the API.
-4. Test login, `/api/auth/me`, `/api/dashboard/summary`, create/list projects, update project status, create/list tasks, update task status, create/list users as admin, create a document, submit it for review, approve/reject it as a manager, archive an approved document, create a purchase request, approve/reject it as a manager, mark an approved request fulfilled, assign an asset to an employee, return/mark an asset damaged, schedule a meeting with attendees, respond to a meeting invitation, update meeting status, and `/api/audit-logs` as admin.
+4. Test login, `/api/auth/me`, `/api/dashboard/summary`, create/list projects, update project status, create/list tasks, update task status, create/list users as admin, create a document, submit it for review, approve/reject it as a manager, archive an approved document, create a purchase request, approve/reject it as a manager, mark an approved request fulfilled, assign an asset to an employee, return/mark an asset damaged, schedule a meeting with attendees, respond to a meeting invitation, update meeting status, create and reveal encrypted vault entries, and `/api/audit-logs` as admin.
 5. Confirm HTTPS works and that API errors do not expose secrets.
 
 ## W500 operational cautions
@@ -80,7 +82,7 @@ Do not assume IIS URL Rewrite can proxy to the Node app or that a custom port is
 - W500 lists 256 MB application-pool memory and 1 GB PostgreSQL quota. This is a small shared-hosting footprint, not a high-traffic production server.
 - No Docker Compose deployment on W500.
 - Keep the pool small; avoid large uploads and heavy background jobs.
-- Configure database backups from the hosting panel and test a restore.
+- Configure database backups from the hosting panel and test a restore. Back up `VAULT_ENCRYPTION_KEY` separately in a secure offline location; without the exact key, encrypted vault entries cannot be recovered. Never rotate or replace it without a planned decrypt-and-re-encrypt migration.
 - Before real company data is used, finish MFA, password reset/invitations, granular permissions, audit coverage, monitoring, backup/restore testing, and an independent security review.
 - If the provider cannot run the Express API continuously or cannot route HTTPS requests to it, this W500 plan cannot host the full app/API architecture without a provider-supported alternative.
 
