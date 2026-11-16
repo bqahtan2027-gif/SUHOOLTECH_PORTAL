@@ -3,21 +3,22 @@ import {Receipt,RefreshCw} from "lucide-react";
 type Row=Record<string,any>;
 export default function SalesInvoices({token,role}:{token:string|null;role:string}){
  const canManage=role==="admin"||role==="manager";
- const [invoices,setInvoices]=useState<Row[]>([]),[parties,setParties]=useState<Row[]>([]),[accounts,setAccounts]=useState<Row[]>([]),[items,setItems]=useState<Row[]>([]),[warehouses,setWarehouses]=useState<Row[]>([]),[receipts,setReceipts]=useState<Row[]>([]);
+ const [invoices,setInvoices]=useState<Row[]>([]),[parties,setParties]=useState<Row[]>([]),[accounts,setAccounts]=useState<Row[]>([]),[items,setItems]=useState<Row[]>([]),[warehouses,setWarehouses]=useState<Row[]>([]),[receipts,setReceipts]=useState<Row[]>([]),[creditNotes,setCreditNotes]=useState<Row[]>([]);
  const [error,setError]=useState(""),[busy,setBusy]=useState(false);
  const [form,setForm]=useState({party_id:"",issue_date:new Date().toISOString().slice(0,10),due_date:"",warehouse_id:"",item_id:"",description:"",quantity:"1",unit_price:"0",tax_rate:"15",discount_amount:"0"});
  const [posting,setPosting]=useState({invoice_id:"",receivable_account_id:"",revenue_account_id:"",output_tax_account_id:""});
  const [receipt,setReceipt]=useState({invoice_id:"",amount:"",payment_method:"bank_transfer",payment_account_id:"",reference_number:""});
  const [statementCustomer,setStatementCustomer]=useState(""),[statementFrom,setStatementFrom]=useState(""),[statementTo,setStatementTo]=useState(""),[statement,setStatement]=useState<Row|null>(null);
+ const [creditForm,setCreditForm]=useState({original_invoice_id:"",original_invoice_line_id:"",quantity:"1",credit_date:new Date().toISOString().slice(0,10)});
  const headers={Authorization:"Bearer "+token,"Content-Type":"application/json"};
  const load=useCallback(async()=>{
   if(!token)return;
   try{
-   const urls=["/api/finance/sales-invoices","/api/finance/parties","/api/finance/accounts","/api/inventory/items","/api/inventory/warehouses","/api/finance/customer-receipts"];
+   const urls=["/api/finance/sales-invoices","/api/finance/parties","/api/finance/accounts","/api/inventory/items","/api/inventory/warehouses","/api/finance/customer-receipts","/api/finance/sales-credit-notes"];
    const rs=await Promise.all(urls.map(u=>fetch(u,{headers}))),ds=await Promise.all(rs.map(r=>r.json()));
    const bad=rs.findIndex(r=>!r.ok);if(bad>=0)throw new Error(ds[bad].error||"تعذر تحميل الفواتير");
    setInvoices(ds[0].invoices||[]);setParties((ds[1].parties||[]).filter((x:Row)=>["customer","both"].includes(x.party_type)));
-   setAccounts(ds[2].accounts||[]);setItems(ds[3].items||[]);setWarehouses(ds[4].warehouses||[]);setReceipts(ds[5].receipts||[]);
+   setAccounts(ds[2].accounts||[]);setItems(ds[3].items||[]);setWarehouses(ds[4].warehouses||[]);setReceipts(ds[5].receipts||[]);setCreditNotes(ds[6].credit_notes||[]);
   }catch(e){setError(e instanceof Error?e.message:"تعذر تحميل الفواتير");}
  },[token]);
  useEffect(()=>{void load();},[load]);
@@ -53,6 +54,16 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
     <button disabled={busy}>إصدار الفاتورة وتحديث المخزون والحسابات</button>
    </form>
   </>}
+  <h3>مرتجعات المبيعات والإشعارات الدائنة</h3>
+  <p>أنشئ إشعاراً دائناً مرتبطاً بفاتورة أصلية. عند الترحيل يعاد المخزون إلى مستودع الفاتورة ويُعكس أثر الإيراد والضريبة والذمم.</p>
+  {canManage&&<form className="task-create" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}} onSubmit={e=>{e.preventDefault();void send("/api/finance/sales-credit-notes",{original_invoice_id:creditForm.original_invoice_id,credit_date:creditForm.credit_date,lines:[{original_invoice_line_id:creditForm.original_invoice_line_id,quantity:Number(creditForm.quantity)}]});}}>
+   <select required value={creditForm.original_invoice_id} onChange={e=>{const invoice=invoices.find(x=>x.id===e.target.value);setCreditForm(v=>({...v,original_invoice_id:e.target.value,original_invoice_line_id:invoice?.lines?.[0]?.id||""}));}}><option value="">اختر الفاتورة الأصلية</option>{invoices.filter(x=>["issued","partially_paid","paid"].includes(x.status)).map(x=><option key={x.id} value={x.id}>{x.invoice_number} · {x.customer_name}</option>)}</select>
+   <select required value={creditForm.original_invoice_line_id} onChange={e=>setCreditForm(v=>({...v,original_invoice_line_id:e.target.value}))}><option value="">اختر البند المرتجع</option>{(invoices.find(x=>x.id===creditForm.original_invoice_id)?.lines||[]).map((l:Row)=><option key={l.id} value={l.id}>{l.description} · الكمية {l.quantity}</option>)}</select>
+   <input required type="number" min="0.001" step="0.001" placeholder="الكمية المرتجعة" value={creditForm.quantity} onChange={e=>setCreditForm(v=>({...v,quantity:e.target.value}))}/>
+   <input required type="date" value={creditForm.credit_date} onChange={e=>setCreditForm(v=>({...v,credit_date:e.target.value}))}/>
+   <button disabled={busy||!creditForm.original_invoice_line_id}>إنشاء إشعار دائن كمسودة</button>
+  </form>}
+  <div className="task-list">{creditNotes.map(x=><article className="task-row" key={x.id}><div><strong>{x.credit_note_number} · {x.customer_name} · {Number(x.total).toLocaleString("ar-SA")} ر.س</strong><small>الفاتورة الأصلية {x.invoice_number} · {x.credit_date} · {x.status==="issued"?"مرحّل":x.status==="draft"?"مسودة":x.status}</small>{x.journal_entry_id&&<small>قيد {x.entry_number||"مرحّل"} {x.stock_document_number?"· استلام "+x.stock_document_number:""}</small>}</div>{canManage&&x.status==="draft"&&<button disabled={busy} onClick={()=>void send("/api/finance/sales-credit-notes/"+x.id+"/post",{})}>ترحيل الإشعار وإرجاع المخزون</button>}</article>)}{!creditNotes.length&&<div className="empty-state">لا توجد مرتجعات مبيعات.</div>}</div>
   <h3>سجل فواتير المبيعات</h3>
   <div className="task-list">{invoices.map(x=><article className="task-row" key={x.id}><div><strong>{x.invoice_number} · {x.customer_name}</strong><small>{x.issue_date} · {Number(x.total).toLocaleString("ar-SA")} ر.س · {x.status==="issued"?"صادرة":x.status==="draft"?"مسودة":x.status}</small><small>المحصل {Number(x.paid_amount||0).toLocaleString("ar-SA")} ر.س · المتبقي {Math.max(0,Number(x.total)-Number(x.paid_amount||0)).toLocaleString("ar-SA")} ر.س</small>{x.journal_entry_id&&<small>قيد {x.entry_number||"مرحّل"} {x.stock_document_number?"· صرف "+x.stock_document_number:""}</small>}</div></article>)}{!invoices.length&&<div className="empty-state">لا توجد فواتير مبيعات.</div>}</div>
   {canManage&&<>
