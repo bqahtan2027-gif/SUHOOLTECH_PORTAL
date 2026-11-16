@@ -42,9 +42,26 @@ export default function App() {
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
   const [tasks, setTasks] = useState<Array<{id:string;title:string;status:string;priority:string;due_date?:string}>>([]);
+  const [projects, setProjects] = useState<Array<{id:string;name:string;description?:string;status:string;due_date?:string}>>([]);
+  const [projectName, setProjectName] = useState("");
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectError, setProjectError] = useState("");
+  const [summary, setSummary] = useState<{projects:{total:number;active:number;completed:number};tasks:{total:number;completed:number;open:number;overdue:number};users:{total:number;active:number}} | null>(null);
+  useEffect(() => {
+    if (!token) return;
+    fetch("/api/dashboard/summary", { headers: { Authorization: `Bearer ${token}` } })
+      .then(async response => { const data = await response.json(); if (response.ok) setSummary(data); })
+      .catch(() => undefined);
+  }, [token]);
   const [taskTitle, setTaskTitle] = useState("");
   const [taskBusy, setTaskBusy] = useState(false);
   const [taskError, setTaskError] = useState("");
+  useEffect(() => {
+    if (activeNav !== "projects" || !token) return;
+    fetch("/api/projects", { headers: { Authorization: `Bearer ${token}` } })
+      .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "تعذر تحميل المشاريع"); setProjects(data.projects || []); })
+      .catch(error => setProjectError(error instanceof Error ? error.message : "تعذر تحميل المشاريع"));
+  }, [activeNav, token]);
   useEffect(() => {
     if (activeNav !== "projects" || !token) return;
     fetch("/api/tasks", { headers: { Authorization: `Bearer ${token}` } })
@@ -55,6 +72,26 @@ export default function App() {
     event.preventDefault(); if (!token || !taskTitle.trim()) return; setTaskBusy(true); setTaskError("");
     try { const response = await fetch("/api/tasks", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({title:taskTitle.trim()}) }); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر إنشاء المهمة"); setTasks(current=>[data.task,...current]); setTaskTitle(""); }
     catch(error){setTaskError(error instanceof Error ? error.message : "تعذر إنشاء المهمة");} finally {setTaskBusy(false);}
+  };
+  const createProject = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); if (!token || !projectName.trim()) return;
+    setProjectBusy(true); setProjectError("");
+    try {
+      const response = await fetch("/api/projects", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({name:projectName.trim()}) });
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || "تعذر إنشاء المشروع");
+      setProjects(current=>[data.project,...current]); setProjectName("");
+      const refresh = await fetch("/api/dashboard/summary", {headers:{Authorization:`Bearer ${token}`}});
+      if (refresh.ok) setSummary(await refresh.json());
+    } catch(error) { setProjectError(error instanceof Error ? error.message : "تعذر إنشاء المشروع"); }
+    finally { setProjectBusy(false); }
+  };
+  const changeProjectStatus = async (id:string,status:string) => {
+    if(!token)return;
+    try {
+      const response=await fetch(`/api/projects/${id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({status})});
+      const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر تحديث المشروع");
+      setProjects(current=>current.map(project=>project.id===id?data.project:project));
+    } catch(error) { setProjectError(error instanceof Error?error.message:"تعذر تحديث المشروع"); }
   };
   const changeTaskStatus = async (id:string,status:string) => { if(!token)return; try { const response=await fetch(`/api/tasks/${id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({status})}); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر تحديث المهمة"); setTasks(current=>current.map(task=>task.id===id?data.task:task)); } catch(error){setTaskError(error instanceof Error?error.message:"تعذر تحديث المهمة");} };
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -108,7 +145,7 @@ export default function App() {
       </header>
 
       <div className="page-content">
-        {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المهام والمشاريع</h2><p>أنشئ مهام الفريق وتابع حالتها من مكان واحد.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
+        {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المشاريع</h2><p>أنشئ مشاريع الفريق وتابع حالتها ومواعيدها.</p><form className="task-create" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="اكتب اسم المشروع الجديد..." required maxLength={180}/><button disabled={projectBusy}>{projectBusy ? "جارٍ الحفظ..." : "إضافة مشروع"}</button></form>{projectError && <div className="auth-error">{projectError}</div>}<div className="task-list">{projects.map(project=><article className="task-row" key={project.id}><div><strong>{project.name}</strong><small>{project.status === "completed" ? "مكتمل" : project.status === "on_hold" ? "متوقف مؤقتاً" : project.status === "cancelled" ? "ملغي" : "نشط"}</small></div><select aria-label="حالة المشروع" value={project.status} onChange={e=>changeProjectStatus(project.id,e.target.value)}><option value="active">نشط</option><option value="on_hold">متوقف مؤقتاً</option><option value="completed">مكتمل</option><option value="cancelled">ملغي</option></select></article>)}{projects.length===0 && <div className="empty-state">لا توجد مشاريع بعد. أضف أول مشروع.</div>}</div><div className="section-kicker" style={{marginTop:32}}>المهام</div><p>أنشئ مهام الفريق وتابع سير تنفيذها.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
 
         <section className="welcome-row">
           <div><div className="eyebrow"><span className="eyebrow-line"/> {isArabic ? "بوابة الأنظمة المتكاملة" : "INTEGRATED WORKSPACE"}</div><h1>{isArabic ? "مرحباً بك في سهول تيك" : "Welcome to Suhool Tech"}<span className="wave">✦</span></h1><p>{isArabic ? "مساحة عملك الرقمية، كل أدواتك وأنظمتك في مكان واحد." : "Your digital workspace, with all your tools in one place."}</p></div>
@@ -122,9 +159,9 @@ export default function App() {
         </section>
 
         <section className="stats-grid">
-          <div className="stat-card"><div className="stat-icon blue-bg"><LayoutDashboard size={19}/></div><div><span>{isArabic ? "الأنظمة المتاحة" : "Available systems"}</span><strong>2 <small>{isArabic ? "أنظمة" : "systems"}</small></strong></div><div className="stat-decoration blue-decoration"/></div>
-          <div className="stat-card"><div className="stat-icon teal-bg"><Zap size={19}/></div><div><span>{isArabic ? "أنظمة قيد التخطيط" : "Planned systems"}</span><strong>4 <small>{isArabic ? "أنظمة" : "systems"}</small></strong></div><div className="stat-decoration teal-decoration"/></div>
-          <div className="stat-card"><div className="stat-icon green-bg"><ShieldCheck size={19}/></div><div><span>{isArabic ? "حالة المنصة" : "Platform status"}</span><strong className="healthy">{isArabic ? "جاهزة للتطوير" : "In setup"}</strong></div><div className="stat-decoration green-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon blue-bg"><LayoutDashboard size={19}/></div><div><span>{isArabic ? "الأنظمة المتاحة" : "Available systems"}</span><strong>{summary?.projects.total ?? 0} <small>مشروع</small></strong></div><div className="stat-decoration blue-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon teal-bg"><Zap size={19}/></div><div><span>{isArabic ? "أنظمة قيد التخطيط" : "Planned systems"}</span><strong>{summary?.tasks.open ?? 0} <small>مهمة مفتوحة</small></strong></div><div className="stat-decoration teal-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon green-bg"><ShieldCheck size={19}/></div><div><span>{isArabic ? "حالة المنصة" : "Platform status"}</span><strong className="healthy">{summary ? summary.users.active + " مستخدم نشط" : "متصلة"}</strong></div><div className="stat-decoration green-decoration"/></div>
         </section>
 
         <section className="systems-section" id="systems">
