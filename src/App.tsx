@@ -5,11 +5,12 @@ import Calendar from "./Calendar";
 import Vault from "./Vault";
 import Inventory from "./Inventory";
 import Finance from "./Finance";
+import EnterpriseModule from "./EnterpriseModules";
 import {
   Activity, ArrowLeft, Bell, Building2, CalendarDays,
   Check, ChevronDown, CircleHelp, Clock3, FileCheck2, FileText, FolderKanban,
   Globe2, KeyRound, LayoutDashboard, Menu, Search, Settings2, ShieldCheck,
-  Users, X, Zap, Boxes, Calculator, Receipt
+  Users, X, Zap, Boxes, Calculator, Receipt, UserRound, ShoppingCart, Wallet, Wrench, ChartNoAxesCombined, Headset
 } from "lucide-react";
 
 type Module = {
@@ -27,6 +28,12 @@ const modules: Module[] = [
   { id: "inventory", title: "المستودعات والمخزون", description: "إدارة المستودعات والأصناف وحركات الاستلام والصرف وأرصدة المخزون.", icon: Boxes, color: "cyan", bg: "teal-bg", status: "active", label: "متاح" },
   { id: "finance", title: "النظام المالي", description: "الحسابات والقيود والفواتير والمدفوعات والتقارير المالية.", icon: Calculator, color: "green", bg: "green-bg", status: "planned", label: "قيد التطوير" },
   { id: "zatca", title: "الفوترة الإلكترونية ZATCA", description: "تهيئة الفواتير الإلكترونية والتكامل مع هيئة الزكاة والضريبة والجمارك.", icon: Receipt, color: "purple", bg: "purple-bg", status: "planned", label: "قيد التطوير" },
+  { id: "crm", title: "إدارة العملاء والمبيعات", description: "العملاء المحتملون والفرص ومتابعة الأنشطة.", icon: UserRound, color: "blue", bg: "blue-bg", status: "active", label: "متاح" },
+  { id: "procurement", title: "المشتريات والموردون", description: "طلبات الشراء والموافقات ومتابعة التوريد.", icon: ShoppingCart, color: "orange", bg: "orange-bg", status: "active", label: "متاح" },
+  { id: "payroll", title: "الرواتب", description: "مسيرات الرواتب ومراجعتها واعتمادها.", icon: Wallet, color: "green", bg: "green-bg", status: "active", label: "متاح" },
+  { id: "assets", title: "الأصول والصيانة", description: "سجل الأصول الثابتة والصيانة.", icon: Wrench, color: "navy", bg: "navy-bg", status: "active", label: "متاح" },
+  { id: "bi", title: "ذكاء الأعمال والتقارير", description: "مؤشرات تشغيلية ومالية موحدة.", icon: ChartNoAxesCombined, color: "purple", bg: "purple-bg", status: "active", label: "متاح" },
+  { id: "helpdesk", title: "الدعم الفني والبلاغات", description: "فتح البلاغات ومتابعتها ومعالجتها.", icon: Headset, color: "teal", bg: "teal-bg", status: "active", label: "متاح" },
   { id: "projects", title: "المهام والمشاريع", description: "تابع المشاريع والمهام وسير العمل من مكان واحد.", icon: FolderKanban, color: "blue", bg: "blue-bg", status: "active", label: "متاح" },
   { id: "quotes", title: "عروض الأسعار", description: "إعداد عروض الأسعار ومتابعتها وإدارة تفاصيلها.", icon: FileText, color: "teal", bg: "teal-bg", status: "active", label: "متاح" },
   { id: "hr", title: "الموارد البشرية", description: "ملفات الموظفين والإجازات والحضور.", icon: Users, color: "green", bg: "green-bg", status: "active", label: "متاح" },
@@ -301,6 +308,7 @@ export default function App() {
         {activeNav === "calendar" && <Calendar token={token} role={currentUser?.role || "employee"} userId={currentUser?.id || ""} />}
         {activeNav === "vault" && <Vault token={token} role={currentUser?.role || "employee"} userId={currentUser?.id || ""} />}
         {activeNav === "inventory" && <Inventory token={token} role={currentUser?.role || "employee"} />}
+        {(["crm","procurement","payroll","assets","bi","helpdesk"] as const).includes(activeNav as "crm"|"procurement"|"payroll"|"assets"|"bi"|"helpdesk") && <EnterpriseModule kind={activeNav as "crm"|"procurement"|"payroll"|"assets"|"bi"|"helpdesk"} token={token} role={currentUser?.role || "employee"} />}
         {activeNav === "finance" && <Finance token={token} role={currentUser?.role || "employee"} />}
         {activeNav === "zatca" && <section className="tasks-panel"><div className="section-kicker">الفوترة الإلكترونية</div><h2>التكامل مع هيئة الزكاة والضريبة والجمارك</h2><p>تم تجهيز جداول إعدادات المنشأة وسجل إرسال الفواتير وحالات الاستجابة. الربط الفعلي يتطلب استكمال XML والتوقيع والشهادات واختبارات بيئة الهيئة.</p><div className="empty-state">التكامل غير مفعل بعد، ولا يتم إرسال أي بيانات إلى الهيئة حالياً.</div></section>}
         {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المشاريع</h2><p>أنشئ مشاريع الفريق وتابع حالتها ومواعيدها.</p><form className="task-create" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="اكتب اسم المشروع الجديد..." required maxLength={180}/><button disabled={projectBusy}>{projectBusy ? "جارٍ الحفظ..." : "إضافة مشروع"}</button></form>{projectError && <div className="auth-error">{projectError}</div>}<div className="task-list">{projects.map(project=><article className="task-row" key={project.id}><div><strong>{project.name}</strong><small>{project.status === "completed" ? "مكتمل" : project.status === "on_hold" ? "متوقف مؤقتاً" : project.status === "cancelled" ? "ملغي" : "نشط"}</small></div><select aria-label="حالة المشروع" value={project.status} onChange={e=>changeProjectStatus(project.id,e.target.value)}><option value="active">نشط</option><option value="on_hold">متوقف مؤقتاً</option><option value="completed">مكتمل</option><option value="cancelled">ملغي</option></select></article>)}{projects.length===0 && <div className="empty-state">لا توجد مشاريع بعد. أضف أول مشروع.</div>}</div><div className="section-kicker" style={{marginTop:32}}>المهام</div><p>أنشئ مهام الفريق وتابع سير تنفيذها.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
