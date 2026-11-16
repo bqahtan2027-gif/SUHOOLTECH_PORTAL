@@ -948,6 +948,40 @@ app.post("/api/finance/customer-receipts",auth,financeManager,async(req,res)=>{
 });
 
 
+app.get("/api/finance/parties/:id/statement",auth,async(req,res)=>{
+ const query=z.object({from:z.string().date().optional(),to:z.string().date().optional()}).refine(v=>!v.from||!v.to||v.from<=v.to).safeParse(req.query);
+ if(!query.success)return res.status(400).json({error:"نطاق تاريخ كشف الحساب غير صالح"});
+ try{
+  const party=await pool.query("select id,name,party_type from finance_parties where id=$1",[req.params.id]);
+  if(!party.rowCount||!["customer","both"].includes(party.rows[0].party_type))return res.status(404).json({error:"العميل غير موجود"});
+  const from=query.data.from||"1900-01-01",to=query.data.to||"2999-12-31";
+  const opening=await pool.query(`
+   select coalesce(sum(x.debit-x.credit),0)::numeric(16,2) as balance from (
+    select i.total as debit,0::numeric as credit from sales_invoices i
+     where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and i.issue_date<$2::date
+    union all
+    select 0::numeric,a.amount as credit from sales_receipt_allocations a
+     join sales_invoices i on i.id=a.invoice_id join finance_receipts r on r.id=a.receipt_id
+     where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and r.received_at<$2::date
+   ) x`,[req.params.id,from]);
+  const rows=await pool.query(`
+   select * from (
+    select i.id,'invoice'::text as transaction_type,i.invoice_number as reference,i.issue_date::date as transaction_date,
+     ('فاتورة مبيعات '||i.invoice_number)::text as description,i.total::numeric(16,2) as debit,0::numeric(16,2) as credit
+    from sales_invoices i where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and i.issue_date between $2::date and $3::date
+    union all
+    select r.id,'receipt'::text,r.receipt_number,r.received_at::date,('سند قبض '||r.receipt_number)::text,
+     0::numeric(16,2),r.amount::numeric(16,2)
+    from finance_receipts r join sales_invoices i on i.id=r.invoice_id
+    where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and r.received_at::date between $2::date and $3::date
+   ) ledger order by transaction_date,transaction_type,reference`,[req.params.id,from,to]);
+  let balance=Number(opening.rows[0].balance);
+  const transactions=rows.rows.map(row=>{balance=Math.round((balance+Number(row.debit)-Number(row.credit))*100)/100;return {...row,running_balance:balance};});
+  res.json({party:party.rows[0],period:{from,to},opening_balance:opening.rows[0].balance,closing_balance:balance,transactions});
+ }catch(e){console.error("customer statement failed",e.message);res.status(503).json({error:"تعذر إعداد كشف حساب العميل"});}
+});
+
+
 const enterpriseManager=(req,res,next)=>["admin","manager"].includes(req.user.role)?next():res.status(403).json({error:"هذه العملية متاحة للمدير ومدير النظام"});
 app.get("/api/crm/leads",auth,async(_req,res)=>{try{const r=await pool.query("select * from crm_leads order by created_at desc limit 300");res.json({leads:r.rows});}catch(e){res.status(503).json({error:"تعذر تحميل العملاء المحتملين"});}});
 app.post("/api/crm/leads",auth,async(req,res)=>{const p=z.object({company_name:z.string().trim().min(2).max(180),contact_name:z.string().max(160).optional(),email:z.string().email().max(254).optional().or(z.literal("")),phone:z.string().max(40).optional(),source:z.string().max(60).optional(),estimated_value:z.coerce.number().min(0).max(999999999).default(0),notes:z.string().max(4000).optional()}).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من بيانات العميل المحتمل"});try{const r=await pool.query("insert into crm_leads(lead_number,company_name,contact_name,email,phone,source,estimated_value,notes,created_by) values('LEAD-'||lpad(nextval('crm_lead_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6,$7,$8) returning *",[p.data.company_name,p.data.contact_name||null,p.data.email||null,p.data.phone||null,p.data.source||null,p.data.estimated_value,p.data.notes||null,req.user.sub]);await audit(req.user.sub,"crm.lead_created","crm_lead",r.rows[0].id);res.status(201).json({lead:r.rows[0]});}catch(e){res.status(500).json({error:"تعذر حفظ العميل المحتمل"});}});
