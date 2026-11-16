@@ -44,8 +44,10 @@ The API currently uses the `pg` driver and PostgreSQL parameter syntax. The conn
 Run these SQL files in order against the newly created PostgreSQL database using the provider's database tool or an approved PostgreSQL client:
 1. `database/init/001_core.sql`
 2. `database/init/002_projects_dashboard.sql`
+3. `database/init/003_quotes.sql`
+4. `database/init/004_hr.sql`
 
-The second migration adds the projects module and dashboard indexes. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
+The second migration adds projects and dashboard indexes. The third adds quotes and quote items. The fourth adds the employee directory and leave requests. Confirm the account has permission to create the `pgcrypto` extension in the first script; if not, ask support to enable it or provide an approved alternative before proceeding. Do not expose PostgreSQL publicly.
 
 ## Frontend build and IIS
 
