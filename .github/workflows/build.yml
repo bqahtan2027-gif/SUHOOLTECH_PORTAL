@@ -60,6 +60,7 @@ jobs:
             "013_goods_receipts.sql",
             "014_supplier_invoices.sql",
             "015_sales_workflow.sql",
+            "016_customer_receipts.sql",
           ];
 
           try {
