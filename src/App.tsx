@@ -47,6 +47,17 @@ export default function App() {
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectError, setProjectError] = useState("");
   const [summary, setSummary] = useState<{projects:{total:number;active:number;completed:number};tasks:{total:number;completed:number;open:number;overdue:number};users:{total:number;active:number}} | null>(null);
+  const [users, setUsers] = useState<Array<{id:string;full_name:string;email:string;role:string;active:boolean;last_login_at?:string}>>([]);
+  const [auditLogs, setAuditLogs] = useState<Array<{id:number;action:string;entity_type:string;entity_id?:string;actor_name?:string;created_at:string}>>([]);
+  const [newUser, setNewUser] = useState({name:"",email:"",password:"",role:"employee"});
+  const [userError, setUserError] = useState("");
+  const [userBusy, setUserBusy] = useState(false);
+  useEffect(() => {
+    if (!token || currentUser?.role !== "admin" || !["admin-users","activity"].includes(activeNav)) return;
+    const headers = { Authorization: `Bearer ${token}` };
+    if (activeNav === "admin-users") fetch("/api/users", {headers}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل المستخدمين");setUsers(d.users||[]);}).catch(e=>setUserError(e instanceof Error?e.message:"تعذر تحميل المستخدمين"));
+    if (activeNav === "activity") fetch("/api/audit-logs?limit=100", {headers}).then(async r=>{const d=await r.json();if(!r.ok)throw new Error(d.error||"تعذر تحميل سجل النشاط");setAuditLogs(d.logs||[]);}).catch(e=>setUserError(e instanceof Error?e.message:"تعذر تحميل سجل النشاط"));
+  }, [activeNav, token, currentUser]);
   useEffect(() => {
     if (!token) return;
     fetch("/api/dashboard/summary", { headers: { Authorization: `Bearer ${token}` } })
@@ -94,6 +105,23 @@ export default function App() {
     } catch(error) { setProjectError(error instanceof Error?error.message:"تعذر تحديث المشروع"); }
   };
   const changeTaskStatus = async (id:string,status:string) => { if(!token)return; try { const response=await fetch(`/api/tasks/${id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({status})}); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر تحديث المهمة"); setTasks(current=>current.map(task=>task.id===id?data.task:task)); } catch(error){setTaskError(error instanceof Error?error.message:"تعذر تحديث المهمة");} };
+  const createUser = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); if(!token)return; setUserBusy(true); setUserError("");
+    try {
+      const response=await fetch("/api/users",{method:"POST",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify(newUser)});
+      const data=await response.json(); if(!response.ok)throw new Error(data.error||"تعذر إنشاء المستخدم");
+      setUsers(current=>[data.user,...current]); setNewUser({name:"",email:"",password:"",role:"employee"});
+    } catch(error){setUserError(error instanceof Error?error.message:"تعذر إنشاء المستخدم");}
+    finally{setUserBusy(false);}
+  };
+  const updateUser = async (id:string, patch:{role?:string;active?:boolean}) => {
+    if(!token)return; setUserError("");
+    try {
+      const response=await fetch(`/api/users/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify(patch)});
+      const data=await response.json(); if(!response.ok)throw new Error(data.error||"تعذر تحديث المستخدم");
+      setUsers(current=>current.map(user=>user.id===id?data.user:user));
+    } catch(error){setUserError(error instanceof Error?error.message:"تعذر تحديث المستخدم");}
+  };
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setLoginBusy(true); setLoginError("");
     try {
@@ -121,6 +149,7 @@ export default function App() {
       <nav className="nav-list">
         <button className={activeNav === "overview" ? "nav-item selected" : "nav-item"} onClick={() => setActiveNav("overview")}><LayoutDashboard size={19}/><span>{isArabic ? "نظرة عامة" : "Overview"}</span></button>
         <button className="nav-item" onClick={() => setActiveNav("activity")}><Activity size={19}/><span>{isArabic ? "النشاطات" : "Activity"}</span></button>
+        {currentUser?.role === "admin" && <button className={activeNav === "admin-users" ? "nav-item selected" : "nav-item"} onClick={() => setActiveNav("admin-users")}><Users size={19}/><span>إدارة المستخدمين</span></button>}
         <button className="nav-item" onClick={() => setActiveNav("calendar")}><CalendarDays size={19}/><span>{isArabic ? "التقويم" : "Calendar"}</span></button>
       </nav>
       <div className="nav-label systems-label">{isArabic ? "أنظمة الشركة" : "WORKSPACE"}</div>
@@ -145,6 +174,19 @@ export default function App() {
       </header>
 
       <div className="page-content">
+        {activeNav === "admin-users" && currentUser?.role === "admin" && <section className="tasks-panel">
+          <div className="section-kicker">إدارة الوصول</div><h2>المستخدمون والصلاحيات</h2><p>أضف أعضاء الفريق وحدد أدوارهم وحالة حساباتهم.</p>
+          <form className="task-create" onSubmit={createUser}>
+            <input placeholder="الاسم الكامل" required minLength={2} maxLength={120} value={newUser.name} onChange={e=>setNewUser(v=>({...v,name:e.target.value}))}/>
+            <input type="email" placeholder="البريد الإلكتروني" required value={newUser.email} onChange={e=>setNewUser(v=>({...v,email:e.target.value}))}/>
+            <input type="password" placeholder="كلمة مرور مؤقتة (12 خانة على الأقل)" required minLength={12} value={newUser.password} onChange={e=>setNewUser(v=>({...v,password:e.target.value}))}/>
+            <select value={newUser.role} onChange={e=>setNewUser(v=>({...v,role:e.target.value}))}><option value="employee">موظف</option><option value="manager">مدير فريق</option><option value="admin">مدير النظام</option></select>
+            <button disabled={userBusy}>{userBusy?"جارٍ الحفظ...":"إضافة مستخدم"}</button>
+          </form>
+          {userError && <div className="auth-error">{userError}</div>}
+          <div className="task-list">{users.map(user=><article className="task-row" key={user.id}><div><strong>{user.full_name}</strong><small>{user.email} · {user.role==="admin"?"مدير النظام":user.role==="manager"?"مدير فريق":"موظف"} · {user.active?"نشط":"موقوف"}</small></div><div style={{display:"flex",gap:8,alignItems:"center"}}><select aria-label="دور المستخدم" value={user.role} onChange={e=>updateUser(user.id,{role:e.target.value})}><option value="employee">موظف</option><option value="manager">مدير فريق</option><option value="admin">مدير النظام</option></select><button type="button" onClick={()=>updateUser(user.id,{active:!user.active})}>{user.active?"إيقاف":"تفعيل"}</button></div></article>)}</div>
+        </section>}
+        {activeNav === "activity" && currentUser?.role === "admin" && <section className="tasks-panel"><div className="section-kicker">الشفافية والحوكمة</div><h2>سجل نشاط النظام</h2><p>آخر العمليات المسجلة على حسابات ومشاريع ومهام الشركة.</p>{userError && <div className="auth-error">{userError}</div>}<div className="task-list">{auditLogs.map(log=><article className="task-row" key={log.id}><div><strong>{log.action}</strong><small>{log.actor_name||"النظام"} · {log.entity_type} {log.entity_id||""}</small></div><small>{new Intl.DateTimeFormat("ar-SA",{dateStyle:"short",timeStyle:"short"}).format(new Date(log.created_at))}</small></article>)}{auditLogs.length===0&&<div className="empty-state">لا توجد أحداث مسجلة حتى الآن.</div>}</div></section>}
         {activeNav === "projects" && <section className="tasks-panel"><div className="section-kicker">إدارة العمل</div><h2>المشاريع</h2><p>أنشئ مشاريع الفريق وتابع حالتها ومواعيدها.</p><form className="task-create" onSubmit={createProject}><input value={projectName} onChange={e=>setProjectName(e.target.value)} placeholder="اكتب اسم المشروع الجديد..." required maxLength={180}/><button disabled={projectBusy}>{projectBusy ? "جارٍ الحفظ..." : "إضافة مشروع"}</button></form>{projectError && <div className="auth-error">{projectError}</div>}<div className="task-list">{projects.map(project=><article className="task-row" key={project.id}><div><strong>{project.name}</strong><small>{project.status === "completed" ? "مكتمل" : project.status === "on_hold" ? "متوقف مؤقتاً" : project.status === "cancelled" ? "ملغي" : "نشط"}</small></div><select aria-label="حالة المشروع" value={project.status} onChange={e=>changeProjectStatus(project.id,e.target.value)}><option value="active">نشط</option><option value="on_hold">متوقف مؤقتاً</option><option value="completed">مكتمل</option><option value="cancelled">ملغي</option></select></article>)}{projects.length===0 && <div className="empty-state">لا توجد مشاريع بعد. أضف أول مشروع.</div>}</div><div className="section-kicker" style={{marginTop:32}}>المهام</div><p>أنشئ مهام الفريق وتابع سير تنفيذها.</p><form className="task-create" onSubmit={createTask}><input value={taskTitle} onChange={e=>setTaskTitle(e.target.value)} placeholder="اكتب عنوان المهمة الجديدة..." required maxLength={180}/><button disabled={taskBusy}>{taskBusy ? "جارٍ الحفظ..." : "إضافة مهمة"}</button></form>{taskError && <div className="auth-error">{taskError}</div>}<div className="task-list">{tasks.map(task=><article className="task-row" key={task.id}><div><strong>{task.title}</strong><small>{task.priority === "urgent" ? "عاجلة" : task.priority === "high" ? "مرتفعة" : "عادية"}</small></div><select aria-label="حالة المهمة" value={task.status} onChange={e=>changeTaskStatus(task.id,e.target.value)}><option value="todo">قيد الانتظار</option><option value="in_progress">قيد التنفيذ</option><option value="review">مراجعة</option><option value="done">مكتملة</option><option value="blocked">متوقفة</option></select></article>)}{tasks.length===0 && <div className="empty-state">لا توجد مهام بعد. أضف أول مهمة للفريق.</div>}</div></section>}
 
         <section className="welcome-row">
