@@ -1277,10 +1277,13 @@ app.get("/api/procurement/goods-receipts",auth,enterpriseManager,async(_req,res)
 // Supplier invoices: match billed quantities to received PO quantities and post balanced AP journals.
 app.get("/api/procurement/supplier-invoices",auth,enterpriseManager,async(_req,res)=>{
  try{
-  const r=await pool.query(`select i.*,p.name as supplier_name,o.order_number,j.entry_number
+  const r=await pool.query(`select i.*,p.name as supplier_name,o.order_number,j.entry_number,
+   coalesce(pay.paid_amount,0)::numeric(16,2) paid_amount,
+   greatest(0,i.total-coalesce(pay.paid_amount,0))::numeric(16,2) outstanding_amount
    from supplier_invoices i join finance_parties p on p.id=i.supplier_id
    join purchase_orders o on o.id=i.purchase_order_id
    left join journal_entries j on j.id=i.journal_entry_id
+   left join lateral (select sum(amount) paid_amount from supplier_invoice_payments where supplier_invoice_id=i.id) pay on true
    order by i.invoice_date desc,i.created_at desc limit 300`);
   res.json({invoices:r.rows});
  }catch(error){console.error("supplier invoices list failed",error.message);res.status(503).json({error:"تعذر تحميل فواتير الموردين"});}
@@ -1365,6 +1368,53 @@ app.post("/api/procurement/supplier-invoices/:id/post",auth,enterpriseManager,as
   const known=messages[error.message];
   if(!known)console.error("supplier invoice posting failed",error.message);
   res.status(known?400:500).json({error:known||"تعذر ترحيل فاتورة المورد"});
+ }finally{db.release();}
+});
+
+app.get("/api/procurement/supplier-payments",auth,enterpriseManager,async(_req,res)=>{
+ try{
+  const r=await pool.query(`select p.*,i.internal_number,i.supplier_invoice_number,f.name as supplier_name,j.entry_number,a.account_code,a.account_name
+   from supplier_invoice_payments p join supplier_invoices i on i.id=p.supplier_invoice_id
+   join finance_parties f on f.id=i.supplier_id left join journal_entries j on j.id=p.journal_entry_id
+   left join finance_accounts a on a.id=p.payment_account_id order by p.paid_at desc limit 300`);
+  res.json({payments:r.rows});
+ }catch(e){console.error("supplier payments list failed",e.message);res.status(503).json({error:"تعذر تحميل دفعات الموردين"});}
+});
+app.post("/api/procurement/supplier-payments",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({supplier_invoice_id:z.string().uuid(),amount:z.coerce.number().positive().max(999999999),payment_method:z.enum(["cash","bank_transfer","card","other"]),payment_account_id:z.string().uuid(),reference_number:z.string().max(100).optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من فاتورة المورد والمبلغ وحساب الدفع"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const ir=await db.query("select * from supplier_invoices where id=$1 for update",[p.data.supplier_invoice_id]);
+  if(!ir.rowCount||ir.rows[0].status!=="posted")throw new Error("SUPPLIER_INVOICE_UNAVAILABLE");
+  const inv=ir.rows[0];
+  if(!inv.payable_account_id)throw new Error("PAYABLE_ACCOUNT_MISSING");
+  const paid=await db.query("select coalesce(sum(amount),0)::numeric(16,2) amount from supplier_invoice_payments where supplier_invoice_id=$1",[inv.id]);
+  const outstanding=Math.max(0,Math.round((Number(inv.total)-Number(paid.rows[0].amount))*100)/100);
+  const amount=Math.round(p.data.amount*100)/100;
+  if(amount<=0||amount>outstanding+0.001)throw new Error("PAYMENT_EXCEEDS_DUE");
+  const accounts=await db.query("select id,account_type from finance_accounts where id=any($1::uuid[]) and is_active=true",[[p.data.payment_account_id,inv.payable_account_id]]);
+  const types=new Map(accounts.rows.map(a=>[a.id,a.account_type]));
+  if(accounts.rowCount!==2||types.get(p.data.payment_account_id)!=="asset"||types.get(inv.payable_account_id)!=="liability"||p.data.payment_account_id===inv.payable_account_id)throw new Error("PAYMENT_ACCOUNT_TYPES");
+  const n=await db.query("select nextval('supplier_payment_number_seq') n");
+  const paymentNumber="SPAY-"+new Date().getFullYear()+"-"+String(n.rows[0].n).padStart(7,"0");
+  const journal=await db.query(`insert into journal_entries(entry_number,entry_date,description,status,source_type,source_id,created_by,posted_by,posted_at)
+   values('JE-'||lpad(nextval('journal_number_seq')::text,8,'0'),current_date,$1,'posted','supplier_payment',$2,$3,$3,now()) returning id,entry_number`,
+   ["سداد فاتورة المورد "+inv.internal_number,inv.id,req.user.sub]);
+  await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,0)",[journal.rows[0].id,inv.payable_account_id,"تسوية ذمم المورد "+paymentNumber,amount]);
+  await db.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,0,$4)",[journal.rows[0].id,p.data.payment_account_id,"صرف دفعة المورد "+paymentNumber,amount]);
+  const payment=await db.query(`insert into supplier_invoice_payments(payment_number,supplier_invoice_id,amount,payment_method,payment_account_id,reference_number,journal_entry_id,created_by)
+   values($1,$2,$3,$4,$5,$6,$7,$8) returning *`,
+   [paymentNumber,inv.id,amount,p.data.payment_method,p.data.payment_account_id,p.data.reference_number||null,journal.rows[0].id,req.user.sub]);
+  await db.query("commit");
+  await audit(req.user.sub,"procurement.supplier_payment_created","supplier_invoice_payment",payment.rows[0].id,{payment_number:paymentNumber,invoice_id:inv.id,amount});
+  res.status(201).json({payment:payment.rows[0],journal:journal.rows[0],outstanding:Math.max(0,outstanding-amount)});
+ }catch(e){
+  await db.query("rollback");
+  const messages={SUPPLIER_INVOICE_UNAVAILABLE:"فاتورة المورد غير موجودة أو لم تُرحّل",PAYABLE_ACCOUNT_MISSING:"فاتورة المورد لا تحتوي حساب الدائنين",PAYMENT_EXCEEDS_DUE:"مبلغ السداد يتجاوز المتبقي على فاتورة المورد",PAYMENT_ACCOUNT_TYPES:"اختر حساب صندوق أو بنك نشطاً وحساب دائنين نشطاً ومختلفين"};
+  const known=messages[e.message];if(!known)console.error("supplier payment failed",e.message);
+  res.status(known?400:500).json({error:known||"تعذر تسجيل دفعة المورد"});
  }finally{db.release();}
 });
 
