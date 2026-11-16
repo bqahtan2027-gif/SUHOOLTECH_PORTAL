@@ -9,7 +9,7 @@
 
 ## First run
 1. Clone this repository onto your server.
-2. Copy `.env.selfhost.example` to `.env` and replace every placeholder with long random secrets.
+2. Copy `.env.selfhost.example` to `.env` and replace every placeholder with long random secrets. Generate `VAULT_ENCRYPTION_KEY` with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`; keep a separate secure backup of this exact key.
 3. Run `docker compose up -d --build`.
 4. Check `http://SERVER-IP:8080/api/health`.
 5. Use the one-time bootstrap API to create the first administrator:
@@ -20,7 +20,7 @@
 ## Important
 - The database volume persists data across container restarts.
 - Database ports are not published to the public host.
-- Keep `.env` private and out of Git.
+- Keep `.env` private and out of Git. The API container receives `VAULT_ENCRYPTION_KEY` from this file; without the same key, encrypted vault entries cannot be decrypted.
 - Back up PostgreSQL regularly and test restores.
 - This is an initial self-hosted MVP foundation. Before production use, complete MFA, password reset/invitation flows, audit-event coverage, granular roles, backups/restore drills, monitoring, HTTPS, and penetration/security testing.
 - The bootstrap endpoint must only be used once during initial provisioning.
