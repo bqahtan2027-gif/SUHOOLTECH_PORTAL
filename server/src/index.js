@@ -29,8 +29,9 @@ function auth(req, res, next) {
     const value = req.headers.authorization || "";
     if (!value.startsWith("Bearer ")) return res.status(401).json({ error: "يلزم تسجيل الدخول" });
     req.user = jwt.verify(value.slice(7), process.env.JWT_SECRET, { algorithms: ["HS256"], issuer: "suhooltech", audience: "suhooltech-portal" });
-    pool.query("select 1 from users where id=$1 and active=true", [req.user.sub]).then(result => {
-      if (!result.rowCount) return res.status(401).json({ error: "الحساب غير نشط" });
+    pool.query("select role,active from users where id=$1", [req.user.sub]).then(result => {
+      if (!result.rowCount || !result.rows[0].active) return res.status(401).json({ error: "الحساب غير نشط" });
+      req.user.role = result.rows[0].role;
       next();
     }).catch(() => res.status(503).json({ error: "تعذر التحقق من الحساب" }));
   } catch { return res.status(401).json({ error: "انتهت الجلسة أو أن بيانات الدخول غير صالحة" }); }
@@ -43,7 +44,7 @@ app.get("/api/health", async (_req, res) => {
   try { await pool.query("select 1"); res.json({ status: "ok", database: "connected" }); }
   catch { res.status(503).json({ status: "degraded", database: "unavailable" }); }
 });
-app.post("/api/auth/bootstrap", async (req, res) => {
+app.post("/api/auth/bootstrap", rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: true, legacyHeaders: false }), async (req, res) => {
   const parsed = bootstrapSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "تحقق من الاسم والبريد وكلمة المرور (12 خانة على الأقل)" });
   if (!process.env.BOOTSTRAP_TOKEN || parsed.data.token !== process.env.BOOTSTRAP_TOKEN) return res.status(403).json({ error: "رمز التهيئة غير صحيح" });
