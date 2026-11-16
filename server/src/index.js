@@ -820,7 +820,107 @@ app.post("/api/crm/activities",auth,async(req,res)=>{const p=z.object({lead_id:z
 app.get("/api/procurement/requests",auth,async(req,res)=>{const manager=["admin","manager"].includes(req.user.role);const r=await pool.query("select p.*,u.full_name as requester_name from purchase_requests p left join users u on u.id=p.requested_by "+(manager?"":"where p.requested_by=$1 ")+"order by p.created_at desc limit 300",manager?[]:[req.user.sub]);res.json({requests:r.rows});});
 app.post("/api/procurement/requests",auth,async(req,res)=>{const p=z.object({department:z.string().max(120).optional(),purpose:z.string().trim().min(3).max(2000),required_date:z.string().date().optional(),lines:z.array(z.object({item_id:z.string().uuid().optional(),description:z.string().trim().min(2).max(500),quantity:z.coerce.number().positive().max(1000000),estimated_unit_price:z.coerce.number().min(0).max(999999999).default(0)})).min(1).max(100)}).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من بيانات طلب الشراء وبنوده"});const db=await pool.connect();try{await db.query("begin");const q=await db.query("insert into purchase_requests(request_number,requested_by,department,purpose,required_date) values('PR-'||lpad(nextval('purchase_request_number_seq')::text,6,'0'),$1,$2,$3,$4) returning *",[req.user.sub,p.data.department||null,p.data.purpose,p.data.required_date||null]);for(const l of p.data.lines)await db.query("insert into purchase_request_lines(request_id,item_id,description,quantity,estimated_unit_price) values($1,$2,$3,$4,$5)",[q.rows[0].id,l.item_id||null,l.description,l.quantity,l.estimated_unit_price]);await db.query("commit");await audit(req.user.sub,"procurement.request_created","purchase_request",q.rows[0].id);res.status(201).json({request:q.rows[0]});}catch(e){await db.query("rollback");res.status(500).json({error:"تعذر إنشاء طلب الشراء"});}finally{db.release();}});
 app.patch("/api/procurement/requests/:id/decision",auth,enterpriseManager,async(req,res)=>{const p=z.object({status:z.enum(["approved","rejected"])}).safeParse(req.body);if(!p.success)return res.status(400).json({error:"قرار الطلب غير صالح"});const r=await pool.query("update purchase_requests set status=$1,approved_by=$2,approved_at=now() where id=$3 and status='pending' returning *",[p.data.status,req.user.sub,req.params.id]);if(!r.rowCount)return res.status(409).json({error:"الطلب غير موجود أو سبق اتخاذ قرار فيه"});await audit(req.user.sub,"procurement.request_"+p.data.status,"purchase_request",req.params.id);res.json({request:r.rows[0]});});
-// Payroll draft runs: figures are entered and approved by management; statutory calculations are not automated.
+// Purchase orders and goods receipts: receiving posts stock and PO quantities atomically.
+app.get("/api/procurement/orders",auth,enterpriseManager,async(_req,res)=>{
+ try{
+  const r=await pool.query(`select o.*,p.name as supplier_display_name,
+    coalesce(json_agg(json_build_object('id',l.id,'item_id',l.item_id,'description',l.description,'quantity',l.quantity,'received_quantity',l.received_quantity,'unit_price',l.unit_price,'tax_rate',l.tax_rate) order by l.description) filter(where l.id is not null),'[]'::json) as lines
+    from purchase_orders o left join finance_parties p on p.id=o.supplier_id
+    left join purchase_order_lines l on l.order_id=o.id
+    group by o.id,p.name order by o.order_date desc,o.created_at desc limit 300`);
+  res.json({orders:r.rows});
+ }catch(error){console.error("purchase orders list failed",error.message);res.status(503).json({error:"تعذر تحميل أوامر الشراء"});}
+});
+app.post("/api/procurement/orders",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({
+  request_id:z.string().uuid().optional(),supplier_id:z.string().uuid(),
+  expected_date:z.string().date().optional(),notes:z.string().max(3000).optional(),
+  lines:z.array(z.object({item_id:z.string().uuid().optional(),description:z.string().trim().min(2).max(500),quantity:z.coerce.number().positive().max(1000000),unit_price:z.coerce.number().min(0).max(999999999),tax_rate:z.coerce.number().min(0).max(100).default(15)})).min(1).max(100)
+ }).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من المورد وبنود أمر الشراء"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const supplier=await db.query("select id from finance_parties where id=$1 and party_type in ('supplier','both')",[p.data.supplier_id]);
+  if(!supplier.rowCount)throw new Error("SUPPLIER_INVALID");
+  if(p.data.request_id){
+   const request=await db.query("select status from purchase_requests where id=$1 for update",[p.data.request_id]);
+   if(!request.rowCount||request.rows[0].status!=="approved")throw new Error("REQUEST_NOT_APPROVED");
+  }
+  const subtotal=p.data.lines.reduce((s,l)=>s+l.quantity*l.unit_price,0);
+  const tax=p.data.lines.reduce((s,l)=>s+l.quantity*l.unit_price*l.tax_rate/100,0);
+  const order=await db.query(`insert into purchase_orders(order_number,request_id,supplier_id,supplier_name,expected_date,status,subtotal,tax_amount,total,notes,created_by)
+   values('PO-'||lpad(nextval('purchase_order_number_seq')::text,6,'0'),$1,$2,(select name from finance_parties where id=$2),$3,'sent',$4,$5,$6,$7,$8) returning *`,
+   [p.data.request_id||null,p.data.supplier_id,p.data.expected_date||null,subtotal,tax,subtotal+tax,p.data.notes||null,req.user.sub]);
+  for(const line of p.data.lines)await db.query("insert into purchase_order_lines(order_id,item_id,description,quantity,unit_price,tax_rate) values($1,$2,$3,$4,$5,$6)",[order.rows[0].id,line.item_id||null,line.description,line.quantity,line.unit_price,line.tax_rate]);
+  if(p.data.request_id)await db.query("update purchase_requests set status='ordered' where id=$1",[p.data.request_id]);
+  await db.query("commit");
+  await audit(req.user.sub,"procurement.order_created","purchase_order",order.rows[0].id,{order_number:order.rows[0].order_number});
+  res.status(201).json({order:order.rows[0]});
+ }catch(error){
+  await db.query("rollback");
+  const known=error.message==="SUPPLIER_INVALID"?"المورد غير موجود أو ليس مورداً":error.message==="REQUEST_NOT_APPROVED"?"يجب اعتماد طلب الشراء قبل إصدار الأمر":null;
+  res.status(known?400:500).json({error:known||"تعذر إنشاء أمر الشراء"});
+ }finally{db.release();}
+});
+app.post("/api/procurement/orders/:id/receive",auth,enterpriseManager,async(req,res)=>{
+ const p=z.object({
+  warehouse_id:z.string().uuid(),notes:z.string().max(2000).optional(),
+  lines:z.array(z.object({order_line_id:z.string().uuid(),quantity:z.coerce.number().positive().max(1000000),unit_cost:z.coerce.number().min(0).max(999999999).optional()})).min(1).max(100)
+ }).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من المستودع وكميات الاستلام"});
+ const db=await pool.connect();
+ try{
+  await db.query("begin");
+  const order=await db.query("select * from purchase_orders where id=$1 for update",[req.params.id]);
+  if(!order.rowCount||!["sent","partially_received"].includes(order.rows[0].status))throw new Error("ORDER_NOT_RECEIVABLE");
+  const wh=await db.query("select id from warehouses where id=$1 and is_active=true",[p.data.warehouse_id]);
+  if(!wh.rowCount)throw new Error("WAREHOUSE_INVALID");
+  const ids=p.data.lines.map(x=>x.order_line_id);
+  if(new Set(ids).size!==ids.length)throw new Error("DUPLICATE_LINE");
+  const found=await db.query("select * from purchase_order_lines where order_id=$1 and id=any($2::uuid[]) for update",[req.params.id,ids]);
+  if(found.rowCount!==ids.length)throw new Error("LINE_INVALID");
+  const byId=new Map(found.rows.map(x=>[x.id,x]));
+  for(const line of p.data.lines){
+   const poLine=byId.get(line.order_line_id);
+   if(!poLine.item_id)throw new Error("ITEM_REQUIRED");
+   if(Number(poLine.received_quantity)+line.quantity>Number(poLine.quantity)+0.000001)throw new Error("OVER_RECEIVE");
+  }
+  const stock=await db.query(`insert into stock_documents(document_number,document_type,status,destination_warehouse_id,reference_number,notes,created_by,posted_by,posted_at)
+   values('GR-'||lpad(nextval('stock_document_number_seq')::text,8,'0'),'receipt','posted',$1,$2,$3,$4,$4,now()) returning id,document_number`,
+   [p.data.warehouse_id,order.rows[0].order_number,p.data.notes||null,req.user.sub]);
+  const receipt=await db.query(`insert into goods_receipts(receipt_number,purchase_order_id,warehouse_id,stock_document_id,received_by,notes)
+   values('GRN-'||lpad(nextval('goods_receipt_number_seq')::text,6,'0'),$1,$2,$3,$4,$5) returning *`,
+   [req.params.id,p.data.warehouse_id,stock.rows[0].id,req.user.sub,p.data.notes||null]);
+  for(const line of p.data.lines){
+   const poLine=byId.get(line.order_line_id),cost=line.unit_cost??Number(poLine.unit_price);
+   await db.query("insert into stock_document_lines(document_id,item_id,quantity,unit_cost) values($1,$2,$3,$4)",[stock.rows[0].id,poLine.item_id,line.quantity,cost]);
+   await db.query("insert into goods_receipt_lines(receipt_id,purchase_order_line_id,item_id,quantity,unit_cost) values($1,$2,$3,$4,$5)",[receipt.rows[0].id,poLine.id,poLine.item_id,line.quantity,cost]);
+   await db.query("update purchase_order_lines set received_quantity=received_quantity+$1 where id=$2",[line.quantity,poLine.id]);
+   await db.query("insert into stock_balances(warehouse_id,item_id,quantity) values($1,$2,$3) on conflict(warehouse_id,item_id) do update set quantity=stock_balances.quantity+excluded.quantity,updated_at=now()",[p.data.warehouse_id,poLine.item_id,line.quantity]);
+  }
+  const remaining=await db.query("select count(*)::int as n from purchase_order_lines where order_id=$1 and received_quantity<quantity",[req.params.id]);
+  const receivedStatus=Number(remaining.rows[0].n)===0?"received":"partially_received";
+  await db.query("update purchase_orders set status=$1 where id=$2",[receivedStatus,req.params.id]);
+  await db.query("commit");
+  await audit(req.user.sub,"procurement.goods_received","goods_receipt",receipt.rows[0].id,{purchase_order_id:req.params.id,stock_document_id:stock.rows[0].id});
+  res.status(201).json({receipt:receipt.rows[0],stock_document:stock.rows[0],order_status:receivedStatus});
+ }catch(error){
+  await db.query("rollback");
+  const messages={ORDER_NOT_RECEIVABLE:"أمر الشراء غير موجود أو لا يقبل الاستلام حالياً",WAREHOUSE_INVALID:"المستودع غير موجود أو غير نشط",DUPLICATE_LINE:"لا تكرر بند أمر الشراء في الاستلام",LINE_INVALID:"يوجد بند لا يتبع أمر الشراء",ITEM_REQUIRED:"اربط بند أمر الشراء بصنف مخزني قبل الاستلام",OVER_RECEIVE:"كمية الاستلام تتجاوز الكمية المتبقية في أمر الشراء"};
+  const known=messages[error.message];
+  if(!known)console.error("goods receipt failed",error.message);
+  res.status(known?400:500).json({error:known||"تعذر تسجيل استلام البضاعة"});
+ }finally{db.release();}
+});
+app.get("/api/procurement/goods-receipts",auth,enterpriseManager,async(_req,res)=>{
+ try{const r=await pool.query(`select g.*,o.order_number,w.name as warehouse_name,u.full_name as receiver_name
+  from goods_receipts g join purchase_orders o on o.id=g.purchase_order_id join warehouses w on w.id=g.warehouse_id
+  left join users u on u.id=g.received_by order by g.received_at desc limit 300`);res.json({receipts:r.rows});}
+ catch(error){res.status(503).json({error:"تعذر تحميل سندات الاستلام"});}
+});
+
+// Payroll draft runs: figures are entered and approved by management; statutory calculations are not automated. figures are entered and approved by management; statutory calculations are not automated.
 app.get("/api/payroll/runs",auth,enterpriseManager,async(_req,res)=>{const r=await pool.query("select * from payroll_runs order by period_start desc limit 100");res.json({runs:r.rows});});
 app.post("/api/payroll/runs",auth,enterpriseManager,async(req,res)=>{const p=z.object({period_start:z.string().date(),period_end:z.string().date(),items:z.array(z.object({employee_id:z.string().uuid(),basic_salary:z.coerce.number().min(0),allowances:z.coerce.number().min(0).default(0),deductions:z.coerce.number().min(0).default(0),notes:z.string().max(1000).optional()})).min(1).max(500)}).refine(v=>v.period_end>=v.period_start).safeParse(req.body);if(!p.success)return res.status(400).json({error:"تحقق من فترة المسير وبيانات الموظفين"});if(p.data.items.some(x=>x.deductions>x.basic_salary+x.allowances))return res.status(400).json({error:"الاستقطاعات لا يمكن أن تتجاوز إجمالي المستحقات"});const db=await pool.connect();try{await db.query("begin");const ids=[...new Set(p.data.items.map(x=>x.employee_id))];if(ids.length!==p.data.items.length)throw new Error("DUPLICATE_EMPLOYEE");const active=await db.query("select id from employees where id=any($1::uuid[]) and status='active'",[ids]);if(active.rowCount!==ids.length)throw new Error("EMPLOYEE_INVALID");const gross=p.data.items.reduce((s,x)=>s+x.basic_salary+x.allowances,0),ded=p.data.items.reduce((s,x)=>s+x.deductions,0);const run=await db.query("insert into payroll_runs(run_number,period_start,period_end,total_gross,total_deductions,total_net,created_by) values('PAY-'||lpad(nextval('payroll_run_number_seq')::text,6,'0'),$1,$2,$3,$4,$5,$6) returning *",[p.data.period_start,p.data.period_end,gross,ded,gross-ded,req.user.sub]);for(const x of p.data.items){const g=x.basic_salary+x.allowances;await db.query("insert into payroll_items(run_id,employee_id,basic_salary,allowances,deductions,gross_salary,net_salary,notes) values($1,$2,$3,$4,$5,$6,$7,$8)",[run.rows[0].id,x.employee_id,x.basic_salary,x.allowances,x.deductions,g,g-x.deductions,x.notes||null]);}await db.query("commit");await audit(req.user.sub,"payroll.run_created","payroll_run",run.rows[0].id);res.status(201).json({run:run.rows[0]});}catch(e){await db.query("rollback");res.status(400).json({error:e.message==="EMPLOYEE_INVALID"?"يوجد موظف غير نشط أو غير موجود":e.message==="DUPLICATE_EMPLOYEE"?"لا تكرر الموظف في المسير":"تعذر إنشاء مسير الرواتب"});}finally{db.release();}});
 app.get("/api/payroll/runs/:id/items",auth,enterpriseManager,async(req,res)=>{const r=await pool.query("select p.*,e.employee_number,e.full_name from payroll_items p join employees e on e.id=p.employee_id where p.run_id=$1 order by e.full_name",[req.params.id]);res.json({items:r.rows});});
