@@ -58,6 +58,7 @@ jobs:
             "011_zatca.sql",
             "012_enterprise_modules.sql",
             "013_goods_receipts.sql",
+            "014_supplier_invoices.sql",
           ];
 
           try {
