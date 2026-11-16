@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity, ArrowLeft, Bell, BriefcaseBusiness, Building2, CalendarDays,
   Check, ChevronDown, CircleHelp, Clock3, FileCheck2, FileText, FolderKanban,
@@ -41,6 +41,22 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginBusy, setLoginBusy] = useState(false);
+  const [tasks, setTasks] = useState<Array<{id:string;title:string;status:string;priority:string;due_date?:string}>>([]);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [taskBusy, setTaskBusy] = useState(false);
+  const [taskError, setTaskError] = useState("");
+  useEffect(() => {
+    if (activeNav !== "projects" || !token) return;
+    fetch("/api/tasks", { headers: { Authorization: `Bearer ${token}` } })
+      .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error || "تعذر تحميل المهام"); setTasks(data.tasks || []); })
+      .catch(error => setTaskError(error instanceof Error ? error.message : "تعذر تحميل المهام"));
+  }, [activeNav, token]);
+  const createTask = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault(); if (!token || !taskTitle.trim()) return; setTaskBusy(true); setTaskError("");
+    try { const response = await fetch("/api/tasks", { method:"POST", headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`}, body:JSON.stringify({title:taskTitle.trim()}) }); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر إنشاء المهمة"); setTasks(current=>[data.task,...current]); setTaskTitle(""); }
+    catch(error){setTaskError(error instanceof Error ? error.message : "تعذر إنشاء المهمة");} finally {setTaskBusy(false);}
+  };
+  const changeTaskStatus = async (id:string,status:string) => { if(!token)return; try { const response=await fetch(`/api/tasks/${id}/status`,{method:"PATCH",headers:{"Content-Type":"application/json",Authorization:`Bearer ${token}`},body:JSON.stringify({status})}); const data=await response.json(); if(!response.ok) throw new Error(data.error || "تعذر تحديث المهمة"); setTasks(current=>current.map(task=>task.id===id?data.task:task)); } catch(error){setTaskError(error instanceof Error?error.message:"تعذر تحديث المهمة");} };
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setLoginBusy(true); setLoginError("");
     try {
