@@ -57,6 +57,7 @@ app.post("/api/auth/bootstrap", async (req, res) => {
     const created = await client.query("insert into users(full_name,email,password_hash,role) values($1,lower($2),$3,'admin') returning id,full_name,email,role", [parsed.data.name, parsed.data.email, hash]);
     await client.query("commit");
     const user = created.rows[0];
+    await audit(user.id, "user.bootstrap", "user", user.id, { email: user.email });
     res.status(201).json({ token: issueToken(user), user });
   } catch (e) { await client.query("rollback"); console.error("bootstrap failed", e.message); res.status(500).json({ error: "تعذر إنشاء المدير" }); }
   finally { client.release(); }
@@ -70,6 +71,7 @@ app.post("/api/auth/login", async (req, res) => {
     if (!user || !user.active || !(await bcrypt.compare(parsed.data.password, user.password_hash))) return res.status(401).json({ error: "البريد أو كلمة المرور غير صحيحة" });
     await pool.query("update users set last_login_at=now() where id=$1", [user.id]);
     const safe = { id: user.id, full_name: user.full_name, email: user.email, role: user.role };
+    await audit(user.id, "auth.login", "user", user.id);
     res.json({ token: issueToken(safe), user: safe });
   } catch { res.status(500).json({ error: "تعذر تسجيل الدخول" }); }
 });
@@ -89,6 +91,7 @@ app.post("/api/users", auth, admin, async (req, res) => {
   try {
     const hash = await bcrypt.hash(p.data.password, 12);
     const r = await pool.query("insert into users(full_name,email,password_hash,role) values($1,lower($2),$3,$4) returning id,full_name,email,role,active,created_at", [p.data.name,p.data.email,hash,p.data.role]);
+    await audit(req.user.sub, "user.created", "user", r.rows[0].id, { email: r.rows[0].email, role: r.rows[0].role });
     res.status(201).json({ user: r.rows[0] });
   } catch (e) { res.status(e.code === "23505" ? 409 : 500).json({ error: e.code === "23505" ? "البريد مسجل مسبقاً" : "تعذر إنشاء المستخدم" }); }
 });
@@ -101,6 +104,7 @@ app.post("/api/tasks", auth, async (req, res) => {
   const p = schema.safeParse(req.body);
   if (!p.success) return res.status(400).json({ error: "عنوان المهمة غير صالح" });
   const r = await pool.query("insert into tasks(title,description,priority,due_date,created_by) values($1,$2,$3,$4,$5) returning *", [p.data.title,p.data.description || null,p.data.priority,p.data.due_date || null,req.user.sub]);
+  await audit(req.user.sub, "task.created", "task", r.rows[0].id, { title: r.rows[0].title });
   res.status(201).json({ task: r.rows[0] });
 });
 app.patch("/api/tasks/:id/status", auth, async (req, res) => {
@@ -108,6 +112,7 @@ app.patch("/api/tasks/:id/status", auth, async (req, res) => {
   if (!p.success) return res.status(400).json({ error: "حالة المهمة غير صالحة" });
   const r = await pool.query("update tasks set status=$1,updated_at=now() where id=$2 returning *", [p.data.status,req.params.id]);
   if (!r.rowCount) return res.status(404).json({ error: "المهمة غير موجودة" });
+  await audit(req.user.sub, "task.status_changed", "task", req.params.id, { status: p.data.status });
   res.json({ task: r.rows[0] });
 });
 
