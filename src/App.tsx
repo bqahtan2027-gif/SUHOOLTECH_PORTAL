@@ -159,9 +159,9 @@ export default function App() {
         </section>
 
         <section className="stats-grid">
-          <div className="stat-card"><div className="stat-icon blue-bg"><LayoutDashboard size={19}/></div><div><span>{isArabic ? "الأنظمة المتاحة" : "Available systems"}</span><strong>{summary?.projects.total ?? 0} <small>مشروع</small></strong></div><div className="stat-decoration blue-decoration"/></div>
-          <div className="stat-card"><div className="stat-icon teal-bg"><Zap size={19}/></div><div><span>{isArabic ? "أنظمة قيد التخطيط" : "Planned systems"}</span><strong>{summary?.tasks.open ?? 0} <small>مهمة مفتوحة</small></strong></div><div className="stat-decoration teal-decoration"/></div>
-          <div className="stat-card"><div className="stat-icon green-bg"><ShieldCheck size={19}/></div><div><span>{isArabic ? "حالة المنصة" : "Platform status"}</span><strong className="healthy">{summary ? summary.users.active + " مستخدم نشط" : "متصلة"}</strong></div><div className="stat-decoration green-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon blue-bg"><LayoutDashboard size={19}/></div><div><span>{isArabic ? "المشاريع المسجلة" : "Projects"}</span><strong>{summary?.projects.total ?? 0} <small>مشروع</small></strong></div><div className="stat-decoration blue-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon teal-bg"><Zap size={19}/></div><div><span>{isArabic ? "المهام المفتوحة" : "Open tasks"}</span><strong>{summary?.tasks.open ?? 0} <small>مهمة مفتوحة</small></strong></div><div className="stat-decoration teal-decoration"/></div>
+          <div className="stat-card"><div className="stat-icon green-bg"><ShieldCheck size={19}/></div><div><span>{isArabic ? "المستخدمون النشطون" : "Active users"}</span><strong className="healthy">{summary ? summary.users.active + " مستخدم نشط" : "متصلة"}</strong></div><div className="stat-decoration green-decoration"/></div>
         </section>
 
         <section className="systems-section" id="systems">
