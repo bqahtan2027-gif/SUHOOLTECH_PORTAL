@@ -64,6 +64,7 @@ jobs:
             "017_sales_credit_notes.sql",
             "018_sales_cost_accounting.sql",
             "019_customer_credit_refunds.sql",
+            "020_supplier_payments.sql",
           ];
 
           try {
