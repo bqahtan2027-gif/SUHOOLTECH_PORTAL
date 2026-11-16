@@ -55,6 +55,7 @@ jobs:
             "009_inventory.sql",
             "010_finance.sql",
             "011_zatca.sql",
+            "012_enterprise_modules.sql",
           ];
 
           try {
