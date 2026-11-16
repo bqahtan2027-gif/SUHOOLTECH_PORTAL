@@ -1056,6 +1056,9 @@ app.get("/api/finance/parties/:id/statement",auth,async(req,res)=>{
     select 0::numeric,a.amount as credit from sales_receipt_allocations a
      join sales_invoices i on i.id=a.invoice_id join finance_receipts r on r.id=a.receipt_id
      where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and r.received_at<$2::date
+    union all
+    select 0::numeric as debit,c.total as credit from sales_credit_notes c
+     where c.party_id=$1 and c.status='issued' and c.credit_date<$2::date
    ) x`,[req.params.id,from]);
   const rows=await pool.query(`
    select * from (
@@ -1069,6 +1072,10 @@ app.get("/api/finance/parties/:id/statement",auth,async(req,res)=>{
     join finance_receipts r on r.id=a.receipt_id
     join sales_invoices i on i.id=a.invoice_id
     where i.party_id=$1 and i.status in ('issued','partially_paid','paid') and r.received_at::date between $2::date and $3::date
+    union all
+    select c.id,'credit_note'::text,c.credit_note_number,c.credit_date,('إشعار دائن '||c.credit_note_number)::text,
+     0::numeric(16,2),c.total::numeric(16,2)
+    from sales_credit_notes c where c.party_id=$1 and c.status='issued' and c.credit_date between $2::date and $3::date
    ) ledger order by transaction_date,transaction_type,reference`,[req.params.id,from,to]);
   let balance=Number(opening.rows[0].balance);
   const transactions=rows.rows.map(row=>{balance=Math.round((balance+Number(row.debit)-Number(row.credit))*100)/100;return {...row,running_balance:balance};});
