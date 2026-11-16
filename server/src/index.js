@@ -748,6 +748,67 @@ app.post("/api/inventory/documents",auth,inventoryManager,async(req,res)=>{
  finally{client.release();}
 });
 
+
+const financeManager=(req,res,next)=>["admin","manager"].includes(req.user.role)?next():res.status(403).json({error:"هذه العملية متاحة للمدير ومدير النظام"});
+app.get("/api/finance/summary",auth,async(_req,res)=>{
+ try{
+  const [accounts,parties,journals,invoices]=await Promise.all([
+   pool.query("select count(*)::int as count from finance_accounts where is_active=true"),
+   pool.query("select count(*)::int as count from finance_parties"),
+   pool.query("select count(*)::int as count from journal_entries"),
+   pool.query("select count(*)::int as count,coalesce(sum(total) filter(where status<>'cancelled'),0)::numeric(16,2) as total from sales_invoices")
+  ]);
+  res.json({accounts:Number(accounts.rows[0].count),parties:Number(parties.rows[0].count),journals:Number(journals.rows[0].count),invoice_count:Number(invoices.rows[0].count),invoice_total:invoices.rows[0].total});
+ }catch(error){console.error("finance summary failed",error.message);res.status(503).json({error:"تعذر تحميل الملخص المالي. تحقق من تحديث قاعدة البيانات."});}
+});
+app.get("/api/finance/accounts",auth,async(_req,res)=>{
+ try{const r=await pool.query("select id,account_code,account_name,account_type,parent_id from finance_accounts where is_active=true order by account_code");res.json({accounts:r.rows});}
+ catch(error){res.status(503).json({error:"تعذر تحميل دليل الحسابات"});}
+});
+app.post("/api/finance/accounts",auth,financeManager,async(req,res)=>{
+ const p=z.object({account_code:z.string().trim().min(1).max(30),account_name:z.string().trim().min(2).max(180),account_type:z.enum(["asset","liability","equity","revenue","expense"]),parent_id:z.string().uuid().nullable().optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من بيانات الحساب"});
+ try{const r=await pool.query("insert into finance_accounts(account_code,account_name,account_type,parent_id) values($1,$2,$3,$4) returning *",[p.data.account_code,p.data.account_name,p.data.account_type,p.data.parent_id||null]);await audit(req.user.sub,"finance.account_created","finance_account",r.rows[0].id);res.status(201).json({account:r.rows[0]});}
+ catch(error){res.status(error.code==="23505"?409:400).json({error:error.code==="23505"?"رقم الحساب مستخدم مسبقاً":"تعذر إنشاء الحساب"});}
+});
+app.get("/api/finance/parties",auth,async(_req,res)=>{
+ try{const r=await pool.query("select id,party_type,name,tax_number,email,phone from finance_parties order by name");res.json({parties:r.rows});}
+ catch(error){res.status(503).json({error:"تعذر تحميل العملاء والموردين"});}
+});
+app.post("/api/finance/parties",auth,financeManager,async(req,res)=>{
+ const p=z.object({party_type:z.enum(["customer","supplier","both"]),name:z.string().trim().min(2).max(180),tax_number:z.string().max(30).optional(),email:z.string().email().max(254).optional().or(z.literal("")),phone:z.string().max(40).optional()}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"تحقق من بيانات العميل أو المورد"});
+ try{const r=await pool.query("insert into finance_parties(party_type,name,tax_number,email,phone) values($1,$2,$3,$4,$5) returning *",[p.data.party_type,p.data.name,p.data.tax_number||null,p.data.email||null,p.data.phone||null]);await audit(req.user.sub,"finance.party_created","finance_party",r.rows[0].id);res.status(201).json({party:r.rows[0]});}
+ catch(error){res.status(500).json({error:"تعذر حفظ العميل أو المورد"});}
+});
+app.get("/api/finance/journals",auth,async(_req,res)=>{
+ try{const r=await pool.query("select e.id,e.entry_number,e.entry_date,e.description,e.status,coalesce(sum(l.debit),0)::numeric(16,2) as debit,coalesce(sum(l.credit),0)::numeric(16,2) as credit from journal_entries e left join journal_lines l on l.entry_id=e.id group by e.id order by e.entry_date desc,e.created_at desc limit 100");res.json({journals:r.rows});}
+ catch(error){res.status(503).json({error:"تعذر تحميل القيود اليومية"});}
+});
+app.post("/api/finance/journals",auth,financeManager,async(req,res)=>{
+ const p=z.object({entry_date:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),description:z.string().trim().min(2).max(1000),lines:z.array(z.object({account_id:z.string().uuid(),description:z.string().max(500).optional(),debit:z.coerce.number().min(0).max(999999999),credit:z.coerce.number().min(0).max(999999999)})).min(2).max(100)}).safeParse(req.body);
+ if(!p.success)return res.status(400).json({error:"بيانات القيد غير مكتملة"});
+ const debit=p.data.lines.reduce((s,l)=>s+l.debit,0),credit=p.data.lines.reduce((s,l)=>s+l.credit,0);
+ if(debit<=0||Math.abs(debit-credit)>0.005||p.data.lines.some(l=>(l.debit>0)===(l.credit>0)))return res.status(400).json({error:"القيد غير متوازن أو يحتوي سطراً غير صحيح"});
+ const client=await pool.connect();
+ try{
+  await client.query("begin");
+  const ids=[...new Set(p.data.lines.map(l=>l.account_id))];
+  const found=await client.query("select id from finance_accounts where id=any($1::uuid[]) and is_active=true", [ids]);
+  if(found.rowCount!==ids.length)throw new Error("INVALID_ACCOUNT");
+  const number="JE-"+Date.now();
+  const entry=await client.query("insert into journal_entries(entry_number,entry_date,description,created_by) values($1,$2,$3,$4) returning id,entry_number,entry_date,description,status",[number,p.data.entry_date,p.data.description,req.user.sub]);
+  for(const line of p.data.lines)await client.query("insert into journal_lines(entry_id,account_id,description,debit,credit) values($1,$2,$3,$4,$5)",[entry.rows[0].id,line.account_id,line.description||null,line.debit,line.credit]);
+  await client.query("commit");await audit(req.user.sub,"finance.journal_created","journal_entry",entry.rows[0].id,{debit,credit});res.status(201).json({journal:entry.rows[0],debit,credit});
+ }catch(error){await client.query("rollback");if(error.message==="INVALID_ACCOUNT")return res.status(400).json({error:"يوجد حساب غير نشط أو غير موجود"});console.error("journal create failed",error.message);res.status(500).json({error:"تعذر حفظ القيد"});}
+ finally{client.release();}
+});
+app.post("/api/finance/journals/:id/post",auth,financeManager,async(req,res)=>{
+ const client=await pool.connect();
+ try{await client.query("begin");const e=await client.query("select id,status from journal_entries where id=$1 for update",[req.params.id]);if(!e.rowCount||e.rows[0].status!=="draft"){await client.query("rollback");return res.status(409).json({error:"القيد غير موجود أو ليس مسودة"});}const sums=await client.query("select coalesce(sum(debit),0) debit,coalesce(sum(credit),0) credit,count(*)::int lines from journal_lines where entry_id=$1",[req.params.id]);const s=sums.rows[0];if(Number(s.lines)<2||Math.abs(Number(s.debit)-Number(s.credit))>0.005||Number(s.debit)<=0){await client.query("rollback");return res.status(400).json({error:"لا يمكن ترحيل قيد غير متوازن"});}await client.query("update journal_entries set status='posted',posted_by=$2,posted_at=now() where id=$1",[req.params.id,req.user.sub]);await client.query("commit");await audit(req.user.sub,"finance.journal_posted","journal_entry",req.params.id);res.json({status:"posted"});}
+ catch(error){await client.query("rollback");res.status(500).json({error:"تعذر ترحيل القيد"});}finally{client.release();}
+});
+
 app.use((err, _req, res, _next) => { console.error("request error", err.message); res.status(500).json({ error: "حدث خطأ داخلي" }); });
 const port = Number(process.env.PORT || 4000);
 app.listen(port, "0.0.0.0", () => console.log(`Suhool Tech API listening on ${port}`));
