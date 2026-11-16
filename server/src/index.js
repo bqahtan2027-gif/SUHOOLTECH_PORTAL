@@ -11,7 +11,7 @@ const { Pool } = pg;
 const required = ["DATABASE_URL", "JWT_SECRET"];
 for (const key of required) if (!process.env[key]) throw new Error(`Missing required environment variable: ${key}`);
 if (process.env.JWT_SECRET.length < 48) throw new Error("JWT_SECRET must contain at least 48 characters");
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 15, ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : false });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 5, ssl: process.env.DB_SSL === "true" ? { rejectUnauthorized: true } : false });
 const app = express();
 app.disable("x-powered-by");
 app.use(helmet());
