@@ -54,6 +54,17 @@ export default function SalesInvoices({token,role}:{token:string|null;role:strin
   </>}
   <h3>سجل فواتير المبيعات</h3>
   <div className="task-list">{invoices.map(x=><article className="task-row" key={x.id}><div><strong>{x.invoice_number} · {x.customer_name}</strong><small>{x.issue_date} · {Number(x.total).toLocaleString("ar-SA")} ر.س · {x.status==="issued"?"صادرة":x.status==="draft"?"مسودة":x.status}</small><small>المحصل {Number(x.paid_amount||0).toLocaleString("ar-SA")} ر.س · المتبقي {Math.max(0,Number(x.total)-Number(x.paid_amount||0)).toLocaleString("ar-SA")} ر.س</small>{x.journal_entry_id&&<small>قيد {x.entry_number||"مرحّل"} {x.stock_document_number?"· صرف "+x.stock_document_number:""}</small>}</div></article>)}{!invoices.length&&<div className="empty-state">لا توجد فواتير مبيعات.</div>}</div>
+  {canManage&&<>
+   <h3>تسجيل سند قبض</h3>
+   <form className="task-create" style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(160px,1fr))",gap:10}} onSubmit={e=>{e.preventDefault();void send("/api/finance/customer-receipts",{invoice_id:receipt.invoice_id,amount:Number(receipt.amount),payment_method:receipt.payment_method,payment_account_id:receipt.payment_account_id,reference_number:receipt.reference_number||undefined}).then(ok=>{if(ok)setReceipt(v=>({...v,amount:"",reference_number:""}));});}}>
+    <select required value={receipt.invoice_id} onChange={e=>setReceipt(v=>({...v,invoice_id:e.target.value}))}><option value="">اختر فاتورة مستحقة</option>{invoices.filter(x=>["issued","partially_paid"].includes(x.status)).map(x=><option key={x.id} value={x.id}>{x.invoice_number} · {x.customer_name} · متبقي {Math.max(0,Number(x.total)-Number(x.paid_amount||0)).toFixed(2)} ر.س</option>)}</select>
+    <input required type="number" min="0.01" step="0.01" placeholder="مبلغ القبض" value={receipt.amount} onChange={e=>setReceipt(v=>({...v,amount:e.target.value}))}/>
+    <select required value={receipt.payment_method} onChange={e=>setReceipt(v=>({...v,payment_method:e.target.value}))}><option value="bank_transfer">تحويل بنكي</option><option value="cash">نقدي</option><option value="card">بطاقة</option><option value="other">أخرى</option></select>
+    <select required value={receipt.payment_account_id} onChange={e=>setReceipt(v=>({...v,payment_account_id:e.target.value}))}><option value="">اختر حساب الصندوق أو البنك</option>{accounts.filter(x=>x.account_type==="asset").map(x=><option key={x.id} value={x.id}>{x.account_code} · {x.account_name}</option>)}</select>
+    <input placeholder="رقم مرجع التحويل (اختياري)" value={receipt.reference_number} onChange={e=>setReceipt(v=>({...v,reference_number:e.target.value}))}/>
+    <button disabled={busy||!invoices.some(x=>["issued","partially_paid"].includes(x.status))}>حفظ سند القبض وترحيل القيد</button>
+   </form>
+  </>}
   <h3>سجل سندات القبض</h3><div className="task-list">{receipts.map(x=><article className="task-row" key={x.id}><div><strong>{x.receipt_number} · {x.customer_name||"عميل"}</strong><small>{x.invoice_number||"بدون فاتورة"} · {Number(x.amount).toLocaleString("ar-SA")} ر.س · {x.payment_method==="cash"?"نقدي":x.payment_method==="bank_transfer"?"تحويل بنكي":x.payment_method==="card"?"بطاقة":"أخرى"}</small><small>{x.entry_number?"القيد "+x.entry_number:"قيد محاسبي مرتبط"}</small></div></article>)}{!receipts.length&&<div className="empty-state">لا توجد سندات قبض.</div>}</div>
   <button className="secondary-button" disabled={busy} onClick={()=>void load()}><RefreshCw size={16}/> تحديث البيانات</button>
  </section>;
