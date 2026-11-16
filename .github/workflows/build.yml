@@ -85,3 +85,27 @@ jobs:
             await client.end();
           }
           NODE
+
+      - name: Assemble W500 release package
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -e
+          mkdir -p release/web release/api/src release/database/init release/hosting
+          cp -R dist/. release/web/
+          cp server/src/index.js release/api/src/index.js
+          cp server/package.json release/api/package.json
+          (cd release/api && npm install --omit=dev)
+          cp database/init/*.sql release/database/init/
+          cp hosting/mywindowshosting-w500/README.md release/hosting/README.md
+          cp README.md release/README.md
+          printf 'Commit: %s\nBuilt: %s\n' "$GITHUB_SHA" "$(date -u +%FT%TZ)" > release/BUILD-INFO.txt
+          cd release
+          zip -qr ../suhooltech-w500-release.zip .
+      - name: Upload W500 release package
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: suhooltech-w500-release-${{ github.sha }}
+          path: suhooltech-w500-release.zip
+          if-no-files-found: error
+          retention-days: 30
