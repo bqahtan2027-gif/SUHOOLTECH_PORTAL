@@ -1,5 +1,5 @@
 import {useCallback,useEffect,useState} from "react";
-import {Receipt,RefreshCw,PackageCheck} from "lucide-react";
+import {Receipt,RefreshCw} from "lucide-react";
 type Row=Record<string,any>;
 export default function SalesInvoices({token,role}:{token:string|null;role:string}){
  const canManage=role==="admin"||role==="manager";
